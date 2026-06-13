@@ -3,6 +3,8 @@
 Org-mode-like WYSIWYG editing for Markdown, layered on top of
 [markdown-mode](https://github.com/jrblevin/markdown-mode).
 
+![markdown-plus demo](assets/demo.gif)
+
 ## Features
 
 - **org-appear-style reveal** — markup is hidden and rendered; the raw
@@ -30,6 +32,18 @@ Org-mode-like WYSIWYG editing for Markdown, layered on top of
 (use-package markdown-plus
   :vc (:url "https://github.com/wowhxj/markdown-plus.el.git")
   :hook (markdown-mode . markdown-plus-mode))
+```
+
+### With `package-vc-install` (Emacs 29)
+
+On Emacs 29, `use-package` does not yet support `:vc`. Install the
+package first, then enable it:
+
+```elisp
+(unless (package-installed-p 'markdown-plus)
+  (package-vc-install "https://github.com/wowhxj/markdown-plus.el.git"))
+
+(add-hook 'markdown-mode-hook #'markdown-plus-mode)
 ```
 
 ### Manual
@@ -63,4 +77,4 @@ Or enable it on demand with `M-x markdown-plus-mode` in a Markdown buffer.
 
 ## License
 
-GPL-3.0-or-later.
+GPL-3.0-or-later. See [LICENSE](LICENSE) for the full text.
