@@ -24,6 +24,16 @@ Org-mode-like WYSIWYG editing for Markdown, layered on top of
 
 ## Installation
 
+### With `use-package` (Emacs 30+, `:vc`)
+
+```elisp
+(use-package markdown-plus
+  :vc (:url "https://github.com/wowhxj/markdown-plus.el.git")
+  :hook (markdown-mode . markdown-plus-mode))
+```
+
+### Manual
+
 Put `markdown-plus.el` on your `load-path`, then:
 
 ```elisp
