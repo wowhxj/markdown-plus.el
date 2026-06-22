@@ -7,7 +7,7 @@
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "27.1") (markdown-mode "2.6"))
 ;; Keywords: wp, markdown, convenience, outlines
-;; URL: https://github.com/randolph/markdown-plus
+;; URL: https://github.com/wowhxj/markdown-plus.el
 
 ;; This file is not part of GNU Emacs.
 
