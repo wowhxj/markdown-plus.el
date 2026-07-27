@@ -13,9 +13,12 @@ Org-mode-like WYSIWYG editing for Markdown, layered on top of
   inline code (`` `code` ``), strikethrough (`~~del~~`),
   subscript/superscript (`~x~` / `^x^`), ATX headings (`#`), links
   (`[text](url)`), images (`![](url)`), underline (`<u>x</u>`), list
-  bullets and GitHub alert markers.
-- **Code blocks always verbatim** — fenced blocks (```` ```lang ````)
-  keep their fence lines visible and get a distinct background.
+  bullets, GitHub alert markers and fenced code block markers.
+- **Code blocks always verbatim, fence lines iconified** — fenced blocks
+  (```` ```lang ````) get a distinct background and their content is
+  never touched; the fence markers themselves render as a Nerd Font icon
+  (plus the language, when named) and reveal to raw ```` ```lang ````
+  text like everything else, on point.
 - **Inline image preview** — local and remote images, in both the
   Markdown form `![alt](path)` and the HTML form
   `<img src="path" width="400">`; the tag's `width` is honoured, capped

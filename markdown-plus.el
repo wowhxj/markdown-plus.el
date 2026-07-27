@@ -33,11 +33,12 @@
 ;;     *italic*), inline code (`code`), strikethrough (~~del~~),
 ;;     subscript/superscript (~x~ / ^x^), ATX headings (#), links
 ;;     ([text](url)), images (![](url)), underline (<u>x</u>), list
-;;     bullets and GitHub alert markers are rendered, and the raw source
-;;     is revealed only when point enters the element and re-hidden when
-;;     point leaves.
-;;   * Fenced code blocks (```lang ... ```) are always shown verbatim
-;;     (fence lines stay visible) and get a distinct background.
+;;     bullets, GitHub alert markers and fenced code block markers are
+;;     rendered, and the raw source is revealed only when point enters
+;;     the element and re-hidden when point leaves.
+;;   * Fenced code blocks (```lang ... ```) get a distinct background;
+;;     their content is never touched, and the fence markers render as a
+;;     Nerd Font icon (plus the language, when named) like other markup.
 ;;   * Inline image preview for local and remote images, written either
 ;;     as ![alt](path) or as <img src="path" width="400">; remote images
 ;;     are downloaded asynchronously and shown when ready.
@@ -149,6 +150,11 @@ Group 1 is the `[!TYPE]' marker, group 2 the bare type.")
   "<[sS][oO][uU][rR][cC][eE][ \t][^>]*>"
   "Regexp matching an HTML <source …> tag.")
 
+(defconst markdown-plus--fence-re
+  "^[ \t]*\\(```+\\|~~~+\\)[ \t]*\\([[:alnum:]_+-]*\\)[ \t]*$"
+  "Regexp matching a fenced code block's opening or closing marker line.
+Group 1 is the fence delimiter, group 2 the language (empty when closing).")
+
 ;;;; Faces / colors -----------------------------------------------------------
 
 (defface markdown-plus-underline-face '((t (:underline t)))
@@ -222,6 +228,16 @@ Lets an icon-prefixed label degrade to plain text without a Nerd Font."
           (char-displayable-p (aref label 0)))
       label
     (string-trim-left (substring label 1))))
+
+(defconst markdown-plus--fence-icon (string #xF121) ; nf-oct-code
+  "Icon substituted for a fence marker line while it is not revealed.")
+
+(defun markdown-plus--fence-display (lang)
+  "Return the display substitution for a fence line naming LANG (or \"\")."
+  (markdown-plus--icon-label
+   (if (zerop (length lang))
+       markdown-plus--fence-icon
+     (concat markdown-plus--fence-icon " " lang))))
 
 (defun markdown-plus--alert-properties ()
   "Return font-lock properties for the alert marker just matched, or nil.
@@ -445,17 +461,18 @@ marker is revealed, so other markup on the line keeps its own reveal."
 
 (defun markdown-plus--element-bounds ()
   "Return (BEG . END) of the revealable element at point, or nil.
-Order: HTML image, video, Markdown image, link, underline, ATX heading
-line, inline markup, then the whole-line markers (alert, list bullet).
-The HTML forms come first: their file names routinely contain `_', which
-the inline matcher would otherwise read as emphasis.
-The markers come last so inline markup on the same line still wins.
-Code blocks do not participate; their fence lines are always shown by
-`markdown-plus--jit-fixup'."
+Order: HTML image, video, fence line, Markdown image, link, underline,
+ATX heading line, inline markup, then the whole-line markers (alert,
+list bullet).  The HTML/structural forms come first: their file names
+routinely contain `_', which the inline matcher would otherwise read as
+emphasis.  The markers come last so inline markup on the same line
+still wins.  Only fence *lines* participate this way; the code inside a
+block never does, so it is never treated as revealable."
   (let ((pos (point)))
     (cond
      ((markdown-plus--bounds-at pos markdown-plus--html-image-re))
      ((markdown-plus--bounds-at pos markdown-plus--video-re))
+     ((markdown-plus--bounds-at pos markdown-plus--fence-re))
      ((markdown-plus--bounds-at pos markdown-plus--md-image-re))
      ((markdown-plus--bounds-at
        pos markdown-plus--link-re
@@ -496,7 +513,9 @@ re-hide under jit-lock."
 (defun markdown-plus--jit-fixup (beg end)
   "Run after font-lock during jit-lock fontification of BEG..END.
 
-1. Keep fence lines (```lang/```/~~~) visible (drop hiding props).
+1. Keep fence lines (```lang/```/~~~) from ever going invisible, and show
+   an icon in place of the raw markers unless the active appear region
+   covers that line.
 2. Remove the scaling `display' wrongly applied by sub/superscript
    fontification to strikethrough ~~text~~.
 3. Re-reveal the active appear region so editing within it does not
@@ -505,18 +524,29 @@ re-hide under jit-lock."
 All steps check before modifying so unchanged lines are left alone."
   (when markdown-hide-markup
     (save-excursion
-      ;; (1) unhide fence lines
+      ;; (1) fence lines: never invisible; iconified unless revealed.
+      ;; Use `markdown-plus--region', never (point): during jit-lock
+      ;; redisplay point is moved into the fontified region and is not
+      ;; the real cursor position (same gotcha step 3 works around).
       (goto-char beg)
       (forward-line 0)
       (while (< (point) end)
-        (when (and (looking-at "[ \t]*\\(```\\|~~~\\)")
-                   (or (get-text-property (line-beginning-position) 'invisible)
-                       (get-text-property (point) 'invisible)))
-          (with-silent-modifications
-            (remove-text-properties
-             (line-beginning-position)
-             (min (point-max) (1+ (line-end-position)))
-             '(invisible nil display nil composition nil))))
+        (when (looking-at markdown-plus--fence-re)
+          (let* ((lang (match-string-no-properties 2))
+                 (lbeg (line-beginning-position))
+                 (ltext-end (line-end-position))
+                 (lend (min (point-max) (1+ ltext-end)))
+                 (revealed (and markdown-plus--region
+                               (< (car markdown-plus--region) lend)
+                               (> (cdr markdown-plus--region) lbeg)))
+                 (want (unless revealed (markdown-plus--fence-display lang))))
+            (unless (and (null (get-text-property lbeg 'invisible))
+                        (equal (get-text-property lbeg 'display) want))
+              (with-silent-modifications
+                (remove-text-properties
+                 lbeg lend '(invisible nil display nil composition nil))
+                (when want
+                  (put-text-property lbeg ltext-end 'display want))))))
         (forward-line 1))
       ;; (2) strip subscript display wrongly added inside ~~strikethrough~~
       (goto-char beg)

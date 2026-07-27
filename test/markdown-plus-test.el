@@ -102,6 +102,103 @@
   (markdown-plus-test--with "a <u>und|er</u> b\n"
     (should (equal (markdown-plus-test--revealed) "<u>under</u>"))))
 
+;;;; Fenced code blocks
+
+(ert-deftest markdown-plus-test-bounds-fence-open ()
+  "Point on the opening fence line reveals the whole marker line."
+  (markdown-plus-test--with "```py|thon\ncode\n```\n"
+    (should (equal (markdown-plus-test--revealed) "```python"))))
+
+(ert-deftest markdown-plus-test-bounds-fence-close ()
+  "Point on the closing fence line reveals it, language absent."
+  (markdown-plus-test--with "```python\ncode\n``|`\n"
+    (should (equal (markdown-plus-test--revealed) "```"))))
+
+(ert-deftest markdown-plus-test-bounds-fence-content-not-revealable ()
+  "Point inside the code content is not itself a revealable element."
+  (markdown-plus-test--with "```python\nco|de\n```\n"
+    (should-not (markdown-plus-test--revealed))))
+
+(ert-deftest markdown-plus-test-bounds-inline-code-not-a-fence ()
+  "A single-backtick inline code span is not mistaken for a fence."
+  (markdown-plus-test--with "see `co|de` here\n"
+    (should (equal (markdown-plus-test--revealed) "`code`"))))
+
+(ert-deftest markdown-plus-test-fence-iconified-by-default ()
+  "With no active region, jit-fixup shows the icon, never invisible."
+  (markdown-plus-test--with "```python\ncode\n```\n"
+    (markdown-plus-mode 1)
+    (font-lock-ensure)
+    (setq markdown-plus--region nil)
+    (markdown-plus--jit-fixup (point-min) (point-max))
+    (goto-char (point-min))
+    (should (equal (get-text-property (point) 'display)
+                   (markdown-plus--fence-display "python")))
+    (should-not (get-text-property (point) 'invisible))))
+
+(ert-deftest markdown-plus-test-fence-raw-when-region-covers-it ()
+  "When the tracked region covers the fence line, the raw text shows.
+Mirrors --post-command: only markdown-plus--region decides this, never
+raw (point) -- jit-lock redisplay can move point without it being the
+real cursor position."
+  (markdown-plus-test--with "```python\ncode\n```\n"
+    (markdown-plus-mode 1)
+    (font-lock-ensure)
+    (setq markdown-plus--region (cons (point-min) (line-end-position)))
+    (markdown-plus--jit-fixup (point-min) (point-max))
+    (goto-char (point-min))
+    (should-not (get-text-property (point) 'display))
+    (should-not (get-text-property (point) 'invisible))))
+
+(ert-deftest markdown-plus-test-fence-never-invisible ()
+  "The fence line and its trailing newline never carry `invisible' after
+jit-fixup, regardless of region state.  This is the failure mode ported
+from the org-buffer bug: markdown-fontify-code-blocks-generic hides a
+fence line's own newline along with its text, which otherwise merges
+the block into whatever surrounds it once point is elsewhere."
+  (markdown-plus-test--with "text\n\n```python\ncode\n```\n"
+    (markdown-plus-mode 1)
+    (font-lock-ensure)
+    (markdown-plus--jit-fixup (point-min) (point-max))
+    (goto-char (point-min))
+    (search-forward "```python")
+    (should-not (get-text-property (line-beginning-position) 'invisible))
+    (should-not (get-text-property (line-end-position) 'invisible))))
+
+(ert-deftest markdown-plus-test-fence-closing-icon-no-language ()
+  "The closing fence, with no language, shows the bare icon."
+  (markdown-plus-test--with "```python\ncode\n```\n"
+    (markdown-plus-mode 1)
+    (font-lock-ensure)
+    (setq markdown-plus--region nil)
+    (markdown-plus--jit-fixup (point-min) (point-max))
+    (goto-char (point-min))
+    (search-forward "code\n")
+    (should (equal (get-text-property (point) 'display)
+                   (markdown-plus--fence-display "")))))
+
+(ert-deftest markdown-plus-test-fence-reveal-restore-roundtrip ()
+  "Reveal (point on the fence) shows raw text; leaving restores the icon,
+exercising the same reveal/restore + jit-fixup backstop path
+--post-command drives."
+  (markdown-plus-test--with "```python\ncode\n```\n"
+    (markdown-plus-mode 1)
+    (font-lock-ensure)
+    (goto-char (point-min))
+    (let ((bounds (markdown-plus--element-bounds)))
+      (should bounds)
+      (setq markdown-plus--region bounds)
+      (markdown-plus--reveal (car bounds) (cdr bounds)))
+    (goto-char (point-min))
+    (should-not (get-text-property (point) 'display))
+    (let ((old markdown-plus--region))
+      (setq markdown-plus--region nil)
+      (markdown-plus--restore (car old) (cdr old)))
+    (markdown-plus--jit-fixup (point-min) (point-max))
+    (goto-char (point-min))
+    (should (equal (get-text-property (point) 'display)
+                   (markdown-plus--fence-display "python")))))
+
 ;;;; Font-lock
 
 (ert-deftest markdown-plus-test-alert-fontification ()
