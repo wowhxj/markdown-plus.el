@@ -235,7 +235,12 @@ Nil for an unknown type, which leaves the marker untouched."
 
 (defvar markdown-plus-video-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "RET") #'markdown-plus-play-video-at-point)
+    ;; `C-c C-o' rather than `RET': point on the tag means the tag is
+    ;; revealed, so RET has to stay a newline for editing.  This is also the
+    ;; key markdown-mode uses to follow its own links, and it needs binding
+    ;; here because `markdown-follow-thing-at-point' does not recognise an
+    ;; HTML tag as anything followable.
+    (define-key map (kbd "C-c C-o") #'markdown-plus-play-video-at-point)
     (define-key map [mouse-2] #'markdown-plus-play-video-at-point)
     ;; With the `mouse-face' property set, this is what lets mouse-1 follow
     ;; the link too; the same arrangement markdown-mode uses for its links.
@@ -250,7 +255,7 @@ Nil for an unknown type, which leaves the marker untouched."
       `(face markdown-plus-video-face
              keymap ,markdown-plus-video-map
              mouse-face highlight
-             help-echo ,(concat "mouse-1, RET: play " src)
+             help-echo ,(concat "mouse-1, C-c C-o: play " src)
              ,@(when markdown-hide-markup
                  `(display ,(markdown-plus--icon-label
                              (concat (string #xF04B) ; nf-fa-play
@@ -609,9 +614,9 @@ Counters jit-lock re-hiding after edits or scrolling."
 
 (defun markdown-plus-play-video-at-point (&optional event)
   "Play the video of the `<source>' tag at point, or at EVENT.
-Emacs decodes no video format at all, so the file is handed to
-`browse-url', which on each platform reaches the system's default
-application for it."
+Bound to \\`C-c C-o' and mouse-1 on a rendered video link.  Emacs decodes
+no video format at all, so the file is handed to `browse-url', which on
+each platform reaches the system's default application for it."
   (interactive (list last-nonmenu-event))
   (when (consp event)
     (posn-set-point (event-start event)))

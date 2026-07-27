@@ -26,8 +26,9 @@ Org-mode-like WYSIWYG editing for Markdown, layered on top of
   Nerd Font icon, which degrades to the bare word without such a font.
 - **Video links** — Emacs decodes no video format, so an
   `<source src="clip.mp4">` tag renders as a clickable file name
-  instead. `RET` or a click hands it to `browse-url`, which reaches the
-  system's default player.
+  instead. `C-c C-o` or a click hands it to `browse-url`, which reaches
+  the system's default player. (`RET` is left alone: point on the tag
+  reveals it, so `RET` has to stay a newline.)
 - **Anchor links** — `[text](#name)` jumps to `<a id="name">` or
   `<a name="name">` in the same buffer, the form Org and Pandoc emit for
   cross-references, so an exported table of contents is navigable.
@@ -83,7 +84,7 @@ Or enable it on demand with `M-x markdown-plus-mode` in a Markdown buffer.
 | `s-i`         | `markdown-insert-italic`         |
 | `s-\``        | `markdown-insert-code`           |
 | `s-_`         | `markdown-plus-insert-underline` |
-| `C-c C-o`     | `markdown-follow-thing-at-point` (markdown-mode's own; anchor links now work) |
+| `C-c C-o`     | follow the thing at point — anchor links and video links included |
 
 On macOS `s-` is the Command key. All four emphasis commands toggle:
 they wrap the region or the word at point, and remove the markup again

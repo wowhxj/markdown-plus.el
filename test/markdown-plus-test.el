@@ -142,7 +142,29 @@
       (should (string-suffix-p "VID_01.mp4" (get-text-property p 'display)))
       (should (eq (get-text-property p 'keymap) markdown-plus-video-map))
       (should (equal (get-text-property p 'help-echo)
-                     "mouse-1, RET: play a/VID_01.mp4")))))
+                     "mouse-1, C-c C-o: play a/VID_01.mp4")))))
+
+(ert-deftest markdown-plus-test-video-keys ()
+  "C-c C-o plays; RET and the other C-c bindings are left alone."
+  (markdown-plus-test--with
+      "> <source src=\"a/VID_01.mp4\" ty|pe=\"video/mp4\">\n"
+    (markdown-plus-mode 1)
+    (font-lock-ensure)
+    (should (eq (key-binding (kbd "C-c C-o"))
+                'markdown-plus-play-video-at-point))
+    ;; A prefix binding in a text-property keymap must not hide the rest.
+    (should (eq (key-binding (kbd "C-c C-x C-v")) 'markdown-plus-show-images))
+    (should (eq (key-binding (kbd "C-c C-x C-r")) 'markdown-plus-hide-images))
+    ;; RET stays a newline: point on the tag means the tag is revealed.
+    (should-not (eq (key-binding (kbd "RET"))
+                    'markdown-plus-play-video-at-point))))
+
+(ert-deftest markdown-plus-test-video-keys-off-link ()
+  "Away from a video link, C-c C-o is markdown-mode's own command again."
+  (markdown-plus-test--with "plain te|xt\n"
+    (markdown-plus-mode 1)
+    (font-lock-ensure)
+    (should (eq (key-binding (kbd "C-c C-o")) 'markdown-follow-thing-at-point))))
 
 (ert-deftest markdown-plus-test-video-bounds-beats-inline ()
   "The underscores in a video file name are not read as emphasis."
