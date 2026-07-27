@@ -41,7 +41,9 @@
 ;;     Nerd Font icon (plus the language, when named) like other markup.
 ;;   * Inline image preview for local and remote images, written either
 ;;     as ![alt](path) or as <img src="path" width="400">; remote images
-;;     are downloaded asynchronously and shown when ready.
+;;     are downloaded asynchronously and shown when ready.  A local
+;;     <img src="clip.mp4" width="..."> is shown as a clickable ffmpeg
+;;     thumbnail instead, since Emacs cannot decode video.
 ;;   * GitHub alerts (> [!NOTE], > [!WARNING], ...) render as a coloured
 ;;     label with a Nerd Font icon.
 ;;   * <source src="clip.mp4"> renders as a clickable file name; Emacs
@@ -91,6 +93,19 @@ This changes the faces globally (they are shared across buffers)."
   (expand-file-name "markdown-plus-images/" temporary-file-directory)
   "Directory used to cache downloaded remote images."
   :type 'directory
+  :group 'markdown-plus)
+
+(defcustom markdown-plus-video-extensions '("mp4" "m4v" "mov" "webm" "mkv")
+  "File extensions previewed as a video thumbnail instead of an image.
+Applies to a local file referenced by `<img src=\"...\">'; Emacs cannot
+decode video, so `ffmpeg' grabs a frame instead."
+  :type '(repeat string)
+  :group 'markdown-plus)
+
+(defcustom markdown-plus-video-thumbnail-at "00:00:01"
+  "Seek position passed to ffmpeg's -ss option when grabbing a video frame.
+Clips shorter than this fall back to the first frame."
+  :type 'string
   :group 'markdown-plus)
 
 (defcustom markdown-plus-alert-types
@@ -264,6 +279,16 @@ Nil for an unknown type, which leaves the marker untouched."
     map)
   "Keymap active on a rendered video link.")
 
+(defvar markdown-plus-video-thumbnail-map
+  (let ((map (make-sparse-keymap)))
+    ;; Same rationale as `markdown-plus-video-map': point on the tag means
+    ;; it is revealed as raw text, so RET must stay a newline for editing.
+    (define-key map (kbd "C-c C-o") #'markdown-plus-play-video-thumbnail-at-point)
+    (define-key map [mouse-2] #'markdown-plus-play-video-thumbnail-at-point)
+    (define-key map [follow-link] 'mouse-face)
+    map)
+  "Keymap active on a video thumbnail rendered from an `<img>' tag.")
+
 (defun markdown-plus--video-properties ()
   "Return font-lock properties turning the matched <source> tag into a link."
   (let ((src (markdown-plus--html-attr (match-string-no-properties 0) "src")))
@@ -351,6 +376,46 @@ caps the result, preserving the aspect ratio."
     (when (overlay-get ov 'markdown-plus-image)
       (delete-overlay ov))))
 
+(defun markdown-plus--video-file-p (file)
+  "Return non-nil if FILE's extension is one of `markdown-plus-video-extensions'."
+  (member (downcase (or (file-name-extension file) ""))
+          markdown-plus-video-extensions))
+
+(defun markdown-plus--video-thumbnail (file)
+  "Return a thumbnail image for video FILE, or nil if `ffmpeg' fails.
+The thumbnail is cached as the sibling file FILE.thumb.jpg and is
+regenerated whenever FILE is newer than it."
+  (let* ((thumb (concat file ".thumb.jpg"))
+         (grab (lambda (seek)
+                 (eq 0 (call-process "ffmpeg" nil nil nil "-loglevel" "error"
+                                     "-y" "-ss" seek "-i" file
+                                     "-frames:v" "1" thumb)))))
+    (unless (file-newer-than-file-p thumb file)
+      ;; A clip shorter than `markdown-plus-video-thumbnail-at' seeks past
+      ;; its end and produces no frame; retry from the start.
+      (or (funcall grab markdown-plus-video-thumbnail-at)
+          (funcall grab "0")))
+    (and (file-exists-p thumb) thumb)))
+
+(defun markdown-plus--put-video-thumbnail-overlay (beg end file &optional width)
+  "Overlay BEG..END with a thumbnail of video FILE, at WIDTH pixels.
+Clicking or `C-c C-o' on the overlay hands FILE to the system player,
+via `markdown-plus-video-thumbnail-map'; Emacs decodes no video, so a
+still frame from `ffmpeg' stands in for the image."
+  (unless (cl-some (lambda (o) (overlay-get o 'markdown-plus-image))
+                   (overlays-at beg))
+    (let* ((thumb (markdown-plus--video-thumbnail file))
+           (img (and thumb (ignore-errors (markdown-plus--make-image thumb width)))))
+      (when img
+        (let ((ov (make-overlay beg end)))
+          (overlay-put ov 'markdown-plus-image t)
+          (overlay-put ov 'display img)
+          (overlay-put ov 'keymap markdown-plus-video-thumbnail-map)
+          (overlay-put ov 'mouse-face 'highlight)
+          (overlay-put ov 'help-echo (concat "mouse-1, C-c C-o: play " file))
+          (overlay-put ov 'markdown-plus-video-src file)
+          (overlay-put ov 'evaporate t))))))
+
 (defun markdown-plus--download-image (url dest target-buffer)
   "Download URL to DEST asynchronously, then refresh previews in TARGET-BUFFER."
   (unless (file-directory-p markdown-plus-image-cache-dir)
@@ -382,8 +447,11 @@ tag's pixel `width' attribute, or nil."
 (defun markdown-plus--display-images-in-region (beg end)
   "Render image previews within BEG..END.
 Both `![alt](path)' and `<img src=\"path\">' are recognised.  Remote
-images not yet cached are downloaded asynchronously.  The image under
-point is left as source so it can be edited."
+images not yet cached are downloaded asynchronously.  A local file
+naming a `markdown-plus-video-extensions' format renders as a clickable
+`ffmpeg' thumbnail instead of an image (remote videos are not, since
+that would mean downloading the whole clip just to grab a frame).  The
+image under point is left as source so it can be edited."
   (when (display-graphic-p)
     (let ((cur (point)))
       (save-excursion
@@ -402,7 +470,9 @@ point is left as source so it can be edited."
                       (markdown-plus--download-image path cache (current-buffer))))
                 (let ((f (markdown-plus--local-file path)))
                   (when f
-                    (markdown-plus--put-image-overlay mbeg mend f width)))))))))))
+                    (if (markdown-plus--video-file-p f)
+                        (markdown-plus--put-video-thumbnail-overlay mbeg mend f width)
+                      (markdown-plus--put-image-overlay mbeg mend f width))))))))))))
 
 ;;;###autoload
 (defun markdown-plus-show-images ()
@@ -642,26 +712,44 @@ Counters jit-lock re-hiding after edits or scrolling."
 
 ;;;; Video links --------------------------------------------------------------
 
+(defun markdown-plus--resolve-and-play (src)
+  "Play SRC: browse it directly if a URL, else resolve and open the file.
+Emacs decodes no video format at all, so the file is handed to
+`browse-url', which on each platform reaches the system's default
+application for it."
+  (cond
+   ((string-match-p "\\`https?://" src) (browse-url src))
+   (t (let ((file (markdown-plus--local-file src)))
+        (unless file (user-error "No such file: %s" src))
+        (browse-url (browse-url-file-url (expand-file-name file)))))))
+
 (defun markdown-plus-play-video-at-point (&optional event)
   "Play the video of the `<source>' tag at point, or at EVENT.
-Bound to \\`C-c C-o' and mouse-1 on a rendered video link.  Emacs decodes
-no video format at all, so the file is handed to `browse-url', which on
-each platform reaches the system's default application for it."
+Bound to \\`C-c C-o' and mouse-1 on a rendered video link."
   (interactive (list last-nonmenu-event))
   (when (consp event)
     (posn-set-point (event-start event)))
   (let ((bounds (markdown-plus--bounds-at (point) markdown-plus--video-re)))
     (unless bounds
       (user-error "Point is not on a video link"))
-    (let* ((src (markdown-plus--html-attr
-                 (buffer-substring-no-properties (car bounds) (cdr bounds))
-                 "src"))
-           (file (and src (markdown-plus--local-file src))))
-      (cond
-       ((null src) (user-error "This <source> tag has no `src'"))
-       ((string-match-p "\\`https?://" src) (browse-url src))
-       ((null file) (user-error "No such file: %s" src))
-       (t (browse-url (browse-url-file-url (expand-file-name file))))))))
+    (let ((src (markdown-plus--html-attr
+                (buffer-substring-no-properties (car bounds) (cdr bounds))
+                "src")))
+      (unless src (user-error "This <source> tag has no `src'"))
+      (markdown-plus--resolve-and-play src))))
+
+(defun markdown-plus-play-video-thumbnail-at-point (&optional event)
+  "Play the video behind the thumbnail at point, or at EVENT.
+Bound to \\`C-c C-o' and mouse-1 on a video thumbnail rendered from an
+`<img src=\"....mp4\">' tag."
+  (interactive (list last-nonmenu-event))
+  (when (consp event)
+    (posn-set-point (event-start event)))
+  (let* ((ov (cl-find-if (lambda (o) (overlay-get o 'markdown-plus-video-src))
+                        (overlays-at (point))))
+         (src (and ov (overlay-get ov 'markdown-plus-video-src))))
+    (unless src (user-error "Point is not on a video thumbnail"))
+    (markdown-plus--resolve-and-play src)))
 
 ;;;; Anchor links -------------------------------------------------------------
 

@@ -303,6 +303,128 @@ exercising the same reveal/restore + jit-fixup backstop path
   (markdown-plus-test--with "plain te|xt\n"
     (should-error (markdown-plus-play-video-at-point) :type 'user-error)))
 
+;;;; Video thumbnails
+
+(ert-deftest markdown-plus-test-video-file-p ()
+  "Video detection is by extension, case-insensitively."
+  (should (markdown-plus--video-file-p "a/b.mp4"))
+  (should (markdown-plus--video-file-p "a/B.MP4"))
+  (should (markdown-plus--video-file-p "clip.mov"))
+  (should-not (markdown-plus--video-file-p "a.png"))
+  (should-not (markdown-plus--video-file-p "no-extension")))
+
+(ert-deftest markdown-plus-test-image-re-matches-video-img-tag ()
+  "An `<img>' tag pointing at a video is still an image match; the
+video/still-image branch is decided later, from the resolved file."
+  (with-temp-buffer
+    (insert "<img src=\"clip.mp4\" width=\"400\">\n")
+    (goto-char (point-min))
+    (should (re-search-forward markdown-plus--image-re nil t))
+    (should (equal (markdown-plus--image-at-match) '("clip.mp4" . 400)))))
+
+(defun markdown-plus-test--make-clip (path)
+  "Write a short real video to PATH with ffmpeg, for thumbnail tests."
+  (call-process "ffmpeg" nil nil nil "-loglevel" "error" "-y"
+                "-f" "lavfi" "-i" "testsrc=duration=1:size=64x64:rate=5"
+                "-pix_fmt" "yuv420p" path))
+
+(ert-deftest markdown-plus-test-video-thumbnail-generates-and-caches ()
+  "A thumbnail is generated once, cached, and regenerated when stale."
+  (let* ((dir (make-temp-file "markdown-plus-test" t))
+         (clip (expand-file-name "clip.mp4" dir))
+         (thumb (concat clip ".thumb.jpg")))
+    (unwind-protect
+        (progn
+          (markdown-plus-test--make-clip clip)
+          (should (file-exists-p clip))
+          (let ((got (markdown-plus--video-thumbnail clip)))
+            (should (equal got thumb))
+            (should (file-exists-p thumb))
+            (should (> (file-attribute-size (file-attributes thumb)) 0)))
+          ;; Up to date: left alone.
+          (let ((before (file-attribute-modification-time
+                         (file-attributes thumb))))
+            (markdown-plus--video-thumbnail clip)
+            (should (equal before (file-attribute-modification-time
+                                   (file-attributes thumb)))))
+          ;; Stale (older than the clip): regenerated.
+          (set-file-times thumb '(0 0))
+          (markdown-plus--video-thumbnail clip)
+          (should (file-newer-than-file-p thumb clip)))
+      (delete-directory dir t))))
+
+(ert-deftest markdown-plus-test-video-thumbnail-overlay ()
+  "An `<img>' tag naming a video gets a clickable thumbnail overlay,
+carrying the video keymap rather than the generic `image-map'."
+  (let* ((dir (make-temp-file "markdown-plus-test" t))
+         (clip (expand-file-name "clip.mp4" dir)))
+    (unwind-protect
+        (progn
+          (markdown-plus-test--make-clip clip)
+          (with-temp-buffer
+            (delay-mode-hooks (markdown-mode))
+            (setq buffer-file-name (expand-file-name "doc.md" dir))
+            (insert "<img src=\"clip.mp4\" width=\"400\">\n")
+            (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t)))
+              (markdown-plus--display-images-in-region (point-min) (point-max)))
+            (setq buffer-file-name nil)
+            (let* ((ovs (seq-filter (lambda (o) (overlay-get o 'markdown-plus-image))
+                                   (overlays-in (point-min) (point-max))))
+                   (ov (car ovs)))
+              (should (= 1 (length ovs)))
+              (should (equal clip (overlay-get ov 'markdown-plus-video-src)))
+              (should (eq (overlay-get ov 'keymap) markdown-plus-video-thumbnail-map))
+              (should (equal 400 (plist-get (cdr (overlay-get ov 'display)) :width))))))
+      (delete-directory dir t))))
+
+(ert-deftest markdown-plus-test-image-overlay-still-uses-image-map ()
+  "A plain (non-video) `<img>' tag is unaffected: still `image-map'."
+  (let* ((dir (make-temp-file "markdown-plus-test" t))
+         (pic (expand-file-name "pic.png" dir)))
+    (unwind-protect
+        (progn
+          (write-region "" nil pic nil 'silent)
+          (with-temp-buffer
+            (delay-mode-hooks (markdown-mode))
+            (setq buffer-file-name (expand-file-name "doc.md" dir))
+            (insert "<img src=\"pic.png\">\n")
+            (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                      ((symbol-function 'create-image) (lambda (&rest _) (list 'image))))
+              (markdown-plus--display-images-in-region (point-min) (point-max)))
+            (setq buffer-file-name nil)
+            (let ((ov (car (seq-filter (lambda (o) (overlay-get o 'markdown-plus-image))
+                                       (overlays-in (point-min) (point-max))))))
+              (should (eq (overlay-get ov 'keymap) image-map))
+              (should-not (overlay-get ov 'markdown-plus-video-src)))))
+      (delete-directory dir t))))
+
+(ert-deftest markdown-plus-test-play-video-thumbnail-resolves-file ()
+  "Playing a thumbnail hands the video file to `browse-url'."
+  (let* ((dir (make-temp-file "markdown-plus-test" t))
+         (clip (expand-file-name "clip.mp4" dir))
+         (called nil))
+    (unwind-protect
+        (progn
+          (markdown-plus-test--make-clip clip)
+          (with-temp-buffer
+            (delay-mode-hooks (markdown-mode))
+            (setq buffer-file-name (expand-file-name "doc.md" dir))
+            (insert "<img src=\"clip.mp4\" width=\"400\">\n")
+            (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t)))
+              (markdown-plus--display-images-in-region (point-min) (point-max)))
+            (goto-char (point-min))
+            (cl-letf (((symbol-function 'browse-url)
+                       (lambda (url &rest _) (setq called url))))
+              (markdown-plus-play-video-thumbnail-at-point))
+            (setq buffer-file-name nil)
+            (should (equal called (browse-url-file-url clip)))))
+      (delete-directory dir t))))
+
+(ert-deftest markdown-plus-test-play-video-thumbnail-not-on-overlay ()
+  "Invoking the command away from a thumbnail says so."
+  (markdown-plus-test--with "plain te|xt\n"
+    (should-error (markdown-plus-play-video-thumbnail-at-point) :type 'user-error)))
+
 ;;;; Anchor links
 
 (ert-deftest markdown-plus-test-follow-anchor ()
