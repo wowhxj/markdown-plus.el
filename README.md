@@ -12,11 +12,17 @@ Org-mode-like WYSIWYG editing for Markdown, layered on top of
   moves. Covers emphasis (`**bold**`, `*italic*`, `_underline_`),
   inline code (`` `code` ``), strikethrough (`~~del~~`),
   subscript/superscript (`~x~` / `^x^`), ATX headings (`#`), links
-  (`[text](url)`) and images (`![](url)`).
+  (`[text](url)`), images (`![](url)`), underline (`<u>x</u>`), list
+  bullets and GitHub alert markers.
 - **Code blocks always verbatim** — fenced blocks (```` ```lang ````)
   keep their fence lines visible and get a distinct background.
-- **Inline image preview** — local and remote images; remote images are
-  downloaded asynchronously and shown when ready.
+- **Inline image preview** — local and remote images, in both the
+  Markdown form `![alt](path)` and the HTML form
+  `<img src="path" width="400">`; the tag's `width` is honoured, capped
+  by `markdown-plus-max-image-size`. Remote images are downloaded
+  asynchronously and shown when ready.
+- **GitHub alerts** — `> [!NOTE]`, `> [!TIP]`, `> [!IMPORTANT]`,
+  `> [!WARNING]` and `> [!CAUTION]` render as a coloured label.
 - **Table auto-alignment** — GFM tables are aligned when you leave them.
 
 ## Requirements
@@ -59,10 +65,18 @@ Or enable it on demand with `M-x markdown-plus-mode` in a Markdown buffer.
 
 ## Keybindings
 
-| Key         | Command                     |
-|-------------|-----------------------------|
-| `C-c C-x C-v` | `markdown-plus-show-images` |
-| `C-c C-x C-r` | `markdown-plus-hide-images` |
+| Key           | Command                          |
+|---------------|----------------------------------|
+| `C-c C-x C-v` | `markdown-plus-show-images`      |
+| `C-c C-x C-r` | `markdown-plus-hide-images`      |
+| `s-b`         | `markdown-insert-bold`           |
+| `s-i`         | `markdown-insert-italic`         |
+| `s-\``        | `markdown-insert-code`           |
+| `s-_`         | `markdown-plus-insert-underline` |
+
+On macOS `s-` is the Command key. All four emphasis commands toggle:
+they wrap the region or the word at point, and remove the markup again
+when point is already inside it.
 
 ## Customization
 
@@ -74,6 +88,14 @@ Or enable it on demand with `M-x markdown-plus-mode` in a Markdown buffer.
   (default `t`).
 - `markdown-plus-max-image-size` — `(MAX-WIDTH . MAX-HEIGHT)` in pixels.
 - `markdown-plus-image-cache-dir` — where remote images are cached.
+- `markdown-plus-alert-types` — label and colour per GitHub alert type.
+
+## Tests
+
+```sh
+emacs -Q --batch -L . -l test/markdown-plus-test.el \
+      -f ert-run-tests-batch-and-exit
+```
 
 ## License
 

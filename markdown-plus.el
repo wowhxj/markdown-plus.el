@@ -30,15 +30,19 @@
 ;; WYSIWYG editing experience, layered on top of markdown-mode:
 ;;
 ;;   * Markup hiding with org-appear-style reveal: emphasis (**bold**,
-;;     *italic*, _underline_), inline code (`code`), strikethrough
-;;     (~~del~~), subscript/superscript (~x~ / ^x^), ATX headings (#),
-;;     links ([text](url)) and images (![](url)) are rendered, and the
-;;     raw source is revealed only when point enters the element and
-;;     re-hidden when point leaves.
+;;     *italic*), inline code (`code`), strikethrough (~~del~~),
+;;     subscript/superscript (~x~ / ^x^), ATX headings (#), links
+;;     ([text](url)), images (![](url)), underline (<u>x</u>), list
+;;     bullets and GitHub alert markers are rendered, and the raw source
+;;     is revealed only when point enters the element and re-hidden when
+;;     point leaves.
 ;;   * Fenced code blocks (```lang ... ```) are always shown verbatim
 ;;     (fence lines stay visible) and get a distinct background.
-;;   * Inline image preview for both local and remote images; remote
-;;     images are downloaded asynchronously and shown when ready.
+;;   * Inline image preview for local and remote images, written either
+;;     as ![alt](path) or as <img src="path" width="400">; remote images
+;;     are downloaded asynchronously and shown when ready.
+;;   * GitHub alerts (> [!NOTE], > [!WARNING], ...) render as a coloured
+;;     label.
 ;;   * Automatic table alignment when leaving a GFM table.
 ;;
 ;; Usage:
@@ -83,10 +87,58 @@ This changes the faces globally (they are shared across buffers)."
   :type 'directory
   :group 'markdown-plus)
 
-(defconst markdown-plus--image-link-re "!\\[[^]]*\\](\\([^)]+\\))"
+(defcustom markdown-plus-alert-types
+  '(("NOTE"      "ℹ️ Note"      "#1f6feb")
+    ("TIP"       "💡 Tip"       "#1a7f37")
+    ("IMPORTANT" "❗ Important" "#8250df")
+    ("WARNING"   "⚠️ Warning"   "#9a6700")
+    ("CAUTION"   "🛑 Caution"   "#cf222e"))
+  "GitHub alert types rendered in blockquotes.
+Each entry is (TYPE LABEL COLOR): TYPE is the uppercase keyword in a
+`> [!TYPE]' line, LABEL is shown in its place, COLOR is the foreground."
+  :type '(alist :key-type (string :tag "Type")
+                :value-type (group (string :tag "Label") (color :tag "Color")))
+  :group 'markdown-plus)
+
+;;;; Regexps ------------------------------------------------------------------
+
+(defconst markdown-plus--md-image-re "!\\[[^]]*\\](\\([^)]+\\))"
   "Regexp matching a Markdown image link.  Group 1 is the path/URL.")
 
+;; Spelled out per character so the match does not depend on `case-fold-search'.
+(defconst markdown-plus--html-image-re "<[iI][mM][gG][ \t][^>]*>"
+  "Regexp matching an HTML <img …> tag.")
+
+(defconst markdown-plus--image-re
+  (concat markdown-plus--md-image-re "\\|" markdown-plus--html-image-re)
+  "Regexp matching either image form.
+Group 1 holds the path for the Markdown form; for the HTML form the
+path comes from the tag's `src' attribute.")
+
+(defconst markdown-plus--link-re "\\[[^]]*\\]([^)]+)"
+  "Regexp matching a link.  Images are rejected by the caller's predicate.")
+
+(defconst markdown-plus--inline-re
+  ;; **bold** *italic* __x__ _x_ ~~del~~ ~sub~ ^sup^ `code`
+  ;; (~~ precedes ~ so strikethrough wins over subscript)
+  "\\(\\*\\*\\|\\*\\|__\\|_\\|~~\\|~\\|\\^\\|`+\\)\\(?:.\\|\n\\)+?\\1"
+  "Regexp matching inline emphasis/code.  Group 1 is the delimiter.")
+
+(defconst markdown-plus--underline-re
+  "\\(?1:\\(?2:<u>\\)\\(?3:.*?\\)\\(?4:</u>\\)\\)"
+  "Regexp matching `<u>text</u>'.
+Group 1 is the whole element, 2 and 4 the delimiters, 3 the text.")
+
+(defconst markdown-plus--alert-re
+  "^[ \t]*>[ \t]*\\(\\[!\\([A-Za-z]+\\)\\]\\)[ \t]*$"
+  "Regexp matching a GitHub alert marker line.
+Group 1 is the `[!TYPE]' marker, group 2 the bare type.")
+
 ;;;; Faces / colors -----------------------------------------------------------
+
+(defface markdown-plus-underline-face '((t (:underline t)))
+  "Face for the text inside `<u>...</u>'."
+  :group 'markdown-plus)
 
 (defun markdown-plus--color-dark-p (color)
   "Return non-nil when COLOR is perceptually dark."
@@ -138,7 +190,40 @@ This changes the faces globally (they are shared across buffers)."
     (markdown-plus--set-code-block-background)
     (setq markdown-plus--faces-prettified t)))
 
+;;;; Extra font-lock: GitHub alerts and <u> ----------------------------------
+
+(defun markdown-plus--markup-properties ()
+  "Return the properties to apply to markup, honouring `markdown-hide-markup'."
+  (if markdown-hide-markup markdown-markup-properties 'markdown-markup-face))
+
+(defun markdown-plus--alert-properties ()
+  "Return font-lock properties for the alert marker just matched, or nil.
+Nil for an unknown type, which leaves the marker untouched."
+  (let ((spec (assoc (upcase (match-string-no-properties 2))
+                     markdown-plus-alert-types)))
+    (when spec
+      `(face (:foreground ,(nth 2 spec) :weight bold)
+             ,@(when markdown-hide-markup `(display ,(nth 1 spec)))))))
+
+(defvar markdown-plus--font-lock-keywords
+  `((,markdown-plus--alert-re
+     (1 (markdown-plus--alert-properties) prepend t))
+    (,markdown-plus--underline-re
+     (2 (markdown-plus--markup-properties) prepend)
+     (3 'markdown-plus-underline-face prepend)
+     (4 (markdown-plus--markup-properties) prepend)))
+  "Font-lock keywords added on top of markdown-mode's own.
+Appended so they run last; `prepend' then puts their faces on top.
+`display' and `invisible' are in markdown-mode's
+`font-lock-extra-managed-props', so font-lock cleans them up itself.")
+
 ;;;; Image preview ------------------------------------------------------------
+
+(defun markdown-plus--html-attr (tag attr)
+  "Return the value of ATTR in the HTML TAG string, or nil."
+  (let ((case-fold-search t))
+    (when (string-match (concat "\\<" attr "[ \t]*=[ \t]*\"\\([^\"]*\\)\"") tag)
+      (match-string 1 tag))))
 
 (defun markdown-plus--remote-image-path (url)
   "Return a stable cache file name for the remote image URL."
@@ -164,18 +249,21 @@ Return non-nil on success."
       (write-region (point) (point-max) dest-file nil 'silent))
     t))
 
-(defun markdown-plus--make-image (file)
-  "Create an image object for FILE bounded by `markdown-plus-max-image-size'."
-  (create-image file nil nil
-                :max-width (car markdown-plus-max-image-size)
-                :max-height (cdr markdown-plus-max-image-size)))
+(defun markdown-plus--make-image (file &optional width)
+  "Create an image object for FILE bounded by `markdown-plus-max-image-size'.
+WIDTH, when non-nil, requests that pixel width; the maximum size still
+caps the result, preserving the aspect ratio."
+  (apply #'create-image file nil nil
+         :max-width (car markdown-plus-max-image-size)
+         :max-height (cdr markdown-plus-max-image-size)
+         (when width (list :width width))))
 
-(defun markdown-plus--put-image-overlay (beg end file)
-  "Overlay BEG..END to render the link as the image in FILE."
+(defun markdown-plus--put-image-overlay (beg end file &optional width)
+  "Overlay BEG..END to render the link as the image in FILE, at WIDTH pixels."
   (when (and (file-exists-p file)
              (not (cl-some (lambda (o) (overlay-get o 'markdown-plus-image))
                            (overlays-at beg))))
-    (let ((img (ignore-errors (markdown-plus--make-image file))))
+    (let ((img (ignore-errors (markdown-plus--make-image file width))))
       (when img
         (let ((ov (make-overlay beg end)))
           (overlay-put ov 'markdown-plus-image t)
@@ -205,26 +293,42 @@ Return non-nil on success."
    (list url dest target-buffer)
    t t))
 
+(defun markdown-plus--image-at-match ()
+  "Return (PATH . WIDTH) for the image just matched by `markdown-plus--image-re'.
+PATH is nil when an HTML tag carries no usable `src'.  WIDTH is the
+tag's pixel `width' attribute, or nil."
+  (let* ((tag (unless (match-beginning 1) (match-string-no-properties 0)))
+         (raw (if tag
+                  (markdown-plus--html-attr tag "src")
+                (match-string-no-properties 1)))
+         (w (and tag (markdown-plus--html-attr tag "width"))))
+    (cons (and raw (string-trim raw))
+          (and w (string-match-p "\\`[0-9]+\\'" w) (string-to-number w)))))
+
 (defun markdown-plus--display-images-in-region (beg end)
   "Render image previews within BEG..END.
-Remote images not yet cached are downloaded asynchronously.  The link
-under point is left as source so it can be edited."
+Both `![alt](path)' and `<img src=\"path\">' are recognised.  Remote
+images not yet cached are downloaded asynchronously.  The image under
+point is left as source so it can be edited."
   (when (display-graphic-p)
     (let ((cur (point)))
       (save-excursion
         (goto-char beg)
-        (while (re-search-forward markdown-plus--image-link-re end t)
+        (while (re-search-forward markdown-plus--image-re end t)
           (let* ((mbeg (match-beginning 0))
                  (mend (match-end 0))
-                 (path (string-trim (match-string-no-properties 1))))
-            (unless (and (<= mbeg cur) (<= cur mend))
+                 (spec (markdown-plus--image-at-match))
+                 (path (car spec))
+                 (width (cdr spec)))
+            (unless (or (null path) (and (<= mbeg cur) (<= cur mend)))
               (if (string-match-p "\\`https?://" path)
                   (let ((cache (markdown-plus--remote-image-path path)))
                     (if (file-exists-p cache)
-                        (markdown-plus--put-image-overlay mbeg mend cache)
+                        (markdown-plus--put-image-overlay mbeg mend cache width)
                       (markdown-plus--download-image path cache (current-buffer))))
                 (let ((f (markdown-plus--local-image-file path)))
-                  (when f (markdown-plus--put-image-overlay mbeg mend f)))))))))))
+                  (when f
+                    (markdown-plus--put-image-overlay mbeg mend f width)))))))))))
 
 ;;;###autoload
 (defun markdown-plus-show-images ()
@@ -250,71 +354,61 @@ under point is left as source so it can be edited."
 (defvar-local markdown-plus--timer nil
   "Idle timer used to re-assert reveal after redisplay.")
 
-(defun markdown-plus--inline-bounds (pos)
-  "Return (BEG . END) of the inline emphasis/code element at POS, or nil."
+(defun markdown-plus--bounds-at (pos regexp &optional predicate)
+  "Return (BEG . END) of the REGEXP match on POS's line spanning POS, or nil.
+PREDICATE, when given, is called with the match data set and must return
+non-nil for a match to count."
   (save-excursion
     (goto-char pos)
-    (let ((line-beg (line-beginning-position))
-          (line-end (line-end-position))
+    (let ((line-end (line-end-position))
           found)
-      (goto-char line-beg)
-      (while (and (not found)
-                  (re-search-forward
-                   ;; **bold** *italic* __x__ _x_ ~~del~~ ~sub~ ^sup^ `code`
-                   ;; (~~ precedes ~ so strikethrough wins over subscript)
-                   "\\(\\*\\*\\|\\*\\|__\\|_\\|~~\\|~\\|\\^\\|`+\\)\\(?:.\\|\n\\)+?\\1"
-                   line-end t))
-        (when (and (<= (match-beginning 0) pos)
-                   (>= (match-end 0) pos))
-          (setq found (cons (match-beginning 0) (match-end 0)))))
-      found)))
-
-(defun markdown-plus--image-bounds (pos)
-  "Return (BEG . END) of the image link ![alt](path) at POS, or nil."
-  (save-excursion
-    (goto-char pos)
-    (let ((line-beg (line-beginning-position))
-          (line-end (line-end-position))
-          found)
-      (goto-char line-beg)
-      (while (and (not found)
-                  (re-search-forward "!\\[[^]]*\\]([^)]+)" line-end t))
-        (when (and (<= (match-beginning 0) pos)
-                   (>= (match-end 0) pos))
-          (setq found (cons (match-beginning 0) (match-end 0)))))
-      found)))
-
-(defun markdown-plus--link-bounds (pos)
-  "Return (BEG . END) of the plain link [text](url) at POS, or nil.
-Images (preceded by `!') are excluded."
-  (save-excursion
-    (goto-char pos)
-    (let ((line-beg (line-beginning-position))
-          (line-end (line-end-position))
-          found)
-      (goto-char line-beg)
-      (while (and (not found)
-                  (re-search-forward "\\[[^]]*\\]([^)]+)" line-end t))
+      (goto-char (line-beginning-position))
+      (while (and (not found) (re-search-forward regexp line-end t))
         (when (and (<= (match-beginning 0) pos)
                    (>= (match-end 0) pos)
-                   (not (eq (char-before (match-beginning 0)) ?!)))
+                   (or (null predicate) (funcall predicate)))
           (setq found (cons (match-beginning 0) (match-end 0)))))
       found)))
+
+(defun markdown-plus--line-marker-bounds (regexp group &optional marker-re)
+  "Return (BEG . END) of GROUP if the current line matches REGEXP, else nil.
+When MARKER-RE is given, the marker text must match it as well.
+Unlike `markdown-plus--bounds-at' the whole line triggers, but only the
+marker is revealed, so other markup on the line keeps its own reveal."
+  (save-excursion
+    (beginning-of-line)
+    (when (and (looking-at regexp) (match-beginning group))
+      (let ((beg (match-beginning group))
+            (end (match-end group)))
+        (when (or (null marker-re)
+                  (string-match-p
+                   marker-re (buffer-substring-no-properties beg end)))
+          (cons beg end))))))
 
 (defun markdown-plus--element-bounds ()
   "Return (BEG . END) of the revealable element at point, or nil.
-Order: image, link, ATX heading line, inline markup.  Code blocks do
-not participate; their fence lines are always shown by
+Order: HTML image, Markdown image, link, underline, ATX heading line,
+inline markup, then the whole-line markers (GitHub alert, list bullet).
+The markers come last so inline markup on the same line still wins.
+Code blocks do not participate; their fence lines are always shown by
 `markdown-plus--jit-fixup'."
   (let ((pos (point)))
     (cond
-     ((markdown-plus--image-bounds pos))
-     ((markdown-plus--link-bounds pos))
+     ((markdown-plus--bounds-at pos markdown-plus--html-image-re))
+     ((markdown-plus--bounds-at pos markdown-plus--md-image-re))
+     ((markdown-plus--bounds-at
+       pos markdown-plus--link-re
+       (lambda () (not (eq (char-before (match-beginning 0)) ?!)))))
+     ((markdown-plus--bounds-at pos markdown-plus--underline-re))
      ((save-excursion
         (beginning-of-line)
         (looking-at "[ \t]*#+[ \t]"))
       (cons (line-beginning-position) (line-end-position)))
-     (t (markdown-plus--inline-bounds pos)))))
+     ((markdown-plus--bounds-at pos markdown-plus--inline-re))
+     ((markdown-plus--line-marker-bounds markdown-plus--alert-re 1))
+     ;; Only unordered markers: markdown-mode does not hide `1.', so there
+     ;; would be nothing to reveal.
+     ((markdown-plus--line-marker-bounds markdown-regex-list 2 "\\`[-*+:]\\'")))))
 
 ;;;; Appear: reveal / restore -------------------------------------------------
 
@@ -455,12 +549,29 @@ Counters jit-lock re-hiding after edits or scrolling."
                 (ignore-errors (markdown-table-align))))))
         (setq markdown-plus--table-last nil))))))
 
+;;;; Emphasis editing ---------------------------------------------------------
+
+;;;###autoload
+(defun markdown-plus-insert-underline ()
+  "Insert or remove `<u>...</u>' around the region, the word at point, or point.
+Markdown has no underline of its own, so the HTML tag is used; it is
+hidden and revealed like the native markup."
+  (interactive)
+  (markdown--insert-common "<u>" "</u>" markdown-plus--underline-re 1 3
+                           'markdown-plus-underline-face t))
+
 ;;;; Minor mode ---------------------------------------------------------------
 
 (defvar markdown-plus-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-x C-v") #'markdown-plus-show-images)
     (define-key map (kbd "C-c C-x C-r") #'markdown-plus-hide-images)
+    ;; macOS-style emphasis toggles; the markdown-mode commands remove the
+    ;; markup again when point is already inside it.
+    (define-key map (kbd "s-b") #'markdown-insert-bold)
+    (define-key map (kbd "s-i") #'markdown-insert-italic)
+    (define-key map (kbd "s-`") #'markdown-insert-code)
+    (define-key map (kbd "s-_") #'markdown-plus-insert-underline)
     map)
   "Keymap for `markdown-plus-mode'.")
 
@@ -489,6 +600,7 @@ Counters jit-lock re-hiding after edits or scrolling."
   (add-hook 'post-command-hook #'markdown-plus--table-align-on-leave nil t)
   ;; Append so it runs after font-lock during each jit-lock pass.
   (add-hook 'jit-lock-functions #'markdown-plus--jit-fixup t t)
+  (font-lock-add-keywords nil markdown-plus--font-lock-keywords t)
   ;; Apply hiding now and initialise visible regions.
   (when (fboundp 'markdown-reload-extensions)
     (markdown-reload-extensions))
@@ -502,6 +614,7 @@ Counters jit-lock re-hiding after edits or scrolling."
   (remove-hook 'post-command-hook #'markdown-plus--post-command t)
   (remove-hook 'post-command-hook #'markdown-plus--table-align-on-leave t)
   (remove-hook 'jit-lock-functions #'markdown-plus--jit-fixup t)
+  (font-lock-remove-keywords nil markdown-plus--font-lock-keywords)
   (when (timerp markdown-plus--timer)
     (cancel-timer markdown-plus--timer)
     (setq markdown-plus--timer nil))
