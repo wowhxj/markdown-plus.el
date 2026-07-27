@@ -42,7 +42,11 @@
 ;;     as ![alt](path) or as <img src="path" width="400">; remote images
 ;;     are downloaded asynchronously and shown when ready.
 ;;   * GitHub alerts (> [!NOTE], > [!WARNING], ...) render as a coloured
-;;     label.
+;;     label with a Nerd Font icon.
+;;   * <source src="clip.mp4"> renders as a clickable file name; Emacs
+;;     decodes no video, so RET or a click hands it to the system player.
+;;   * [text](#name) jumps to <a id="name"> in the same buffer, which is
+;;     what makes an Org- or Pandoc-exported table of contents work.
 ;;   * Automatic table alignment when leaving a GFM table.
 ;;
 ;; Usage:
@@ -56,6 +60,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'browse-url)                   ; `browse-url-file-url'
 (require 'markdown-mode)
 
 ;;;; Customization ------------------------------------------------------------
@@ -88,14 +93,19 @@ This changes the faces globally (they are shared across buffers)."
   :group 'markdown-plus)
 
 (defcustom markdown-plus-alert-types
-  '(("NOTE"      "ℹ️ Note"      "#1f6feb")
-    ("TIP"       "💡 Tip"       "#1a7f37")
-    ("IMPORTANT" "❗ Important" "#8250df")
-    ("WARNING"   "⚠️ Warning"   "#9a6700")
-    ("CAUTION"   "🛑 Caution"   "#cf222e"))
+  ;; The leading characters are Nerd Font icons; a display that cannot show
+  ;; one falls back to the bare word.  Emoji are avoided on purpose: the
+  ;; variation selector in ℹ️ and friends renders as a stray box in Emacs.
+  '(("NOTE"      " Note"      "#1f6feb")   ; nf-fa-info_circle
+    ("TIP"       " Tip"       "#1a7f37")   ; nf-fa-lightbulb_o
+    ("IMPORTANT" " Important" "#8250df")   ; nf-fa-exclamation_circle
+    ("WARNING"   " Warning"   "#9a6700")   ; nf-fa-exclamation_triangle
+    ("CAUTION"   " Caution"   "#cf222e"))  ; nf-fa-ban
   "GitHub alert types rendered in blockquotes.
 Each entry is (TYPE LABEL COLOR): TYPE is the uppercase keyword in a
-`> [!TYPE]' line, LABEL is shown in its place, COLOR is the foreground."
+`> [!TYPE]' line, LABEL is shown in its place, COLOR is the foreground.
+A first character of LABEL that the display cannot show is dropped, so
+an icon-prefixed label degrades to plain text without a font."
   :type '(alist :key-type (string :tag "Type")
                 :value-type (group (string :tag "Label") (color :tag "Color")))
   :group 'markdown-plus)
@@ -134,10 +144,19 @@ Group 1 is the whole element, 2 and 4 the delimiters, 3 the text.")
   "Regexp matching a GitHub alert marker line.
 Group 1 is the `[!TYPE]' marker, group 2 the bare type.")
 
+;; Spelled out per character so the match does not depend on `case-fold-search'.
+(defconst markdown-plus--video-re
+  "<[sS][oO][uU][rR][cC][eE][ \t][^>]*>"
+  "Regexp matching an HTML <source …> tag.")
+
 ;;;; Faces / colors -----------------------------------------------------------
 
 (defface markdown-plus-underline-face '((t (:underline t)))
   "Face for the text inside `<u>...</u>'."
+  :group 'markdown-plus)
+
+(defface markdown-plus-video-face '((t (:inherit link)))
+  "Face for a rendered video link."
   :group 'markdown-plus)
 
 (defun markdown-plus--color-dark-p (color)
@@ -190,11 +209,19 @@ Group 1 is the `[!TYPE]' marker, group 2 the bare type.")
     (markdown-plus--set-code-block-background)
     (setq markdown-plus--faces-prettified t)))
 
-;;;; Extra font-lock: GitHub alerts and <u> ----------------------------------
+;;;; Extra font-lock: alerts, videos and <u> ----------------------------------
 
 (defun markdown-plus--markup-properties ()
   "Return the properties to apply to markup, honouring `markdown-hide-markup'."
   (if markdown-hide-markup markdown-markup-properties 'markdown-markup-face))
+
+(defun markdown-plus--icon-label (label)
+  "Return LABEL, dropping a leading icon this display cannot show.
+Lets an icon-prefixed label degrade to plain text without a Nerd Font."
+  (if (or (zerop (length label))
+          (char-displayable-p (aref label 0)))
+      label
+    (string-trim-left (substring label 1))))
 
 (defun markdown-plus--alert-properties ()
   "Return font-lock properties for the alert marker just matched, or nil.
@@ -203,11 +230,37 @@ Nil for an unknown type, which leaves the marker untouched."
                      markdown-plus-alert-types)))
     (when spec
       `(face (:foreground ,(nth 2 spec) :weight bold)
-             ,@(when markdown-hide-markup `(display ,(nth 1 spec)))))))
+             ,@(when markdown-hide-markup
+                 `(display ,(markdown-plus--icon-label (nth 1 spec))))))))
+
+(defvar markdown-plus-video-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'markdown-plus-play-video-at-point)
+    (define-key map [mouse-2] #'markdown-plus-play-video-at-point)
+    ;; With the `mouse-face' property set, this is what lets mouse-1 follow
+    ;; the link too; the same arrangement markdown-mode uses for its links.
+    (define-key map [follow-link] 'mouse-face)
+    map)
+  "Keymap active on a rendered video link.")
+
+(defun markdown-plus--video-properties ()
+  "Return font-lock properties turning the matched <source> tag into a link."
+  (let ((src (markdown-plus--html-attr (match-string-no-properties 0) "src")))
+    (when src
+      `(face markdown-plus-video-face
+             keymap ,markdown-plus-video-map
+             mouse-face highlight
+             help-echo ,(concat "mouse-1, RET: play " src)
+             ,@(when markdown-hide-markup
+                 `(display ,(markdown-plus--icon-label
+                             (concat (string #xF04B) ; nf-fa-play
+                                     " " (file-name-nondirectory src)))))))))
 
 (defvar markdown-plus--font-lock-keywords
   `((,markdown-plus--alert-re
      (1 (markdown-plus--alert-properties) prepend t))
+    (,markdown-plus--video-re
+     (0 (markdown-plus--video-properties) prepend))
     (,markdown-plus--underline-re
      (2 (markdown-plus--markup-properties) prepend)
      (3 'markdown-plus-underline-face prepend)
@@ -233,8 +286,8 @@ Appended so they run last; `prepend' then puts their faces on top.
          (name (concat (md5 url) "." ext)))
     (expand-file-name name markdown-plus-image-cache-dir)))
 
-(defun markdown-plus--local-image-file (path)
-  "Resolve the local image PATH to an existing absolute file, or nil."
+(defun markdown-plus--local-file (path)
+  "Resolve PATH, relative to the buffer's file, to an existing file or nil."
   (let ((f (expand-file-name
             path (file-name-directory
                   (or (buffer-file-name) default-directory)))))
@@ -326,7 +379,7 @@ point is left as source so it can be edited."
                     (if (file-exists-p cache)
                         (markdown-plus--put-image-overlay mbeg mend cache width)
                       (markdown-plus--download-image path cache (current-buffer))))
-                (let ((f (markdown-plus--local-image-file path)))
+                (let ((f (markdown-plus--local-file path)))
                   (when f
                     (markdown-plus--put-image-overlay mbeg mend f width)))))))))))
 
@@ -387,14 +440,17 @@ marker is revealed, so other markup on the line keeps its own reveal."
 
 (defun markdown-plus--element-bounds ()
   "Return (BEG . END) of the revealable element at point, or nil.
-Order: HTML image, Markdown image, link, underline, ATX heading line,
-inline markup, then the whole-line markers (GitHub alert, list bullet).
+Order: HTML image, video, Markdown image, link, underline, ATX heading
+line, inline markup, then the whole-line markers (alert, list bullet).
+The HTML forms come first: their file names routinely contain `_', which
+the inline matcher would otherwise read as emphasis.
 The markers come last so inline markup on the same line still wins.
 Code blocks do not participate; their fence lines are always shown by
 `markdown-plus--jit-fixup'."
   (let ((pos (point)))
     (cond
      ((markdown-plus--bounds-at pos markdown-plus--html-image-re))
+     ((markdown-plus--bounds-at pos markdown-plus--video-re))
      ((markdown-plus--bounds-at pos markdown-plus--md-image-re))
      ((markdown-plus--bounds-at
        pos markdown-plus--link-re
@@ -549,6 +605,58 @@ Counters jit-lock re-hiding after edits or scrolling."
                 (ignore-errors (markdown-table-align))))))
         (setq markdown-plus--table-last nil))))))
 
+;;;; Video links --------------------------------------------------------------
+
+(defun markdown-plus-play-video-at-point (&optional event)
+  "Play the video of the `<source>' tag at point, or at EVENT.
+Emacs decodes no video format at all, so the file is handed to
+`browse-url', which on each platform reaches the system's default
+application for it."
+  (interactive (list last-nonmenu-event))
+  (when (consp event)
+    (posn-set-point (event-start event)))
+  (let ((bounds (markdown-plus--bounds-at (point) markdown-plus--video-re)))
+    (unless bounds
+      (user-error "Point is not on a video link"))
+    (let* ((src (markdown-plus--html-attr
+                 (buffer-substring-no-properties (car bounds) (cdr bounds))
+                 "src"))
+           (file (and src (markdown-plus--local-file src))))
+      (cond
+       ((null src) (user-error "This <source> tag has no `src'"))
+       ((string-match-p "\\`https?://" src) (browse-url src))
+       ((null file) (user-error "No such file: %s" src))
+       (t (browse-url (browse-url-file-url (expand-file-name file))))))))
+
+;;;; Anchor links -------------------------------------------------------------
+
+(defun markdown-plus--follow-anchor (url)
+  "Jump to the in-buffer anchor named by URL, a `#name' fragment.
+Targets are HTML anchors, `<a id=\"name\">' and `<a name=\"name\">', which
+is what Org and Pandoc emit for cross-references.  `markdown--browse-url'
+drops such links on the floor: a bare fragment has an empty file part, so
+nothing happens and nothing is reported.
+
+Installed on `markdown-follow-link-functions', so both \\[markdown-follow-thing-at-point]
+and a mouse click reach it.  Returns non-nil once it has jumped."
+  (when (string-prefix-p "#" url)
+    (let* ((target (substring url 1))
+           (case-fold-search t)
+           (dest (save-excursion
+                   (goto-char (point-min))
+                   (when (re-search-forward
+                          (format "\\_<\\(?:id\\|name\\)[ \t]*=[ \t]*\"%s\""
+                                  (regexp-quote target))
+                          nil t)
+                     (line-beginning-position)))))
+      (unless dest
+        (user-error "No anchor `%s' in this buffer" target))
+      ;; Leave the mark behind so \\[exchange-point-and-mark] returns; no
+      ;; "Mark set" message, the jump is its own feedback.
+      (push-mark nil t)
+      (goto-char dest)
+      t)))
+
 ;;;; Emphasis editing ---------------------------------------------------------
 
 ;;;###autoload
@@ -600,6 +708,7 @@ hidden and revealed like the native markup."
   (add-hook 'post-command-hook #'markdown-plus--table-align-on-leave nil t)
   ;; Append so it runs after font-lock during each jit-lock pass.
   (add-hook 'jit-lock-functions #'markdown-plus--jit-fixup t t)
+  (add-hook 'markdown-follow-link-functions #'markdown-plus--follow-anchor nil t)
   (font-lock-add-keywords nil markdown-plus--font-lock-keywords t)
   ;; Apply hiding now and initialise visible regions.
   (when (fboundp 'markdown-reload-extensions)
@@ -614,6 +723,7 @@ hidden and revealed like the native markup."
   (remove-hook 'post-command-hook #'markdown-plus--post-command t)
   (remove-hook 'post-command-hook #'markdown-plus--table-align-on-leave t)
   (remove-hook 'jit-lock-functions #'markdown-plus--jit-fixup t)
+  (remove-hook 'markdown-follow-link-functions #'markdown-plus--follow-anchor t)
   (font-lock-remove-keywords nil markdown-plus--font-lock-keywords)
   (when (timerp markdown-plus--timer)
     (cancel-timer markdown-plus--timer)
