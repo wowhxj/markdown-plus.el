@@ -302,11 +302,48 @@ Nil for an unknown type, which leaves the marker untouched."
                              (concat (string #xF04B) ; nf-fa-play
                                      " " (file-name-nondirectory src)))))))))
 
+;; Defined by the `define-minor-mode' form further down, but read here.
+(defvar markdown-plus--region)
+
+(defun markdown-plus--fence-matcher (last)
+  "Match a fenced code block marker line before LAST.
+Group 0 is the marker text and group 2 its language, as in
+`markdown-plus--fence-re'.  Group 3 is added for the line's own newline:
+`markdown-fontify-code-blocks-generic' hides that newline along with the
+marker, and that is what merges a block into the surrounding text.  The
+two need separate groups because the icon may only replace the marker --
+covering the newline with a `display' string would eat the line break."
+  (when (re-search-forward markdown-plus--fence-re last t)
+    (let* ((md (match-data))
+           (text-end (nth 1 md)))
+      (set-match-data
+       (append md (when (< text-end (point-max))
+                    (list text-end (1+ text-end)))))
+      t)))
+
+(defun markdown-plus--fence-properties ()
+  "Return font-lock properties for the fence marker line just matched.
+Substitutes the icon unless the active appear region covers the line --
+read from `markdown-plus--region', never (point), which is not the real
+cursor position during jit-lock redisplay."
+  (let* ((lang (match-string-no-properties 2))
+         (lbeg (match-beginning 0))
+         (lend (min (point-max) (1+ (match-end 0))))
+         (revealed (and markdown-plus--region
+                        (< (car markdown-plus--region) lend)
+                        (> (cdr markdown-plus--region) lbeg))))
+    `(face nil invisible nil
+           display ,(unless revealed (markdown-plus--fence-display lang)))))
+
 (defvar markdown-plus--font-lock-keywords
   `((,markdown-plus--alert-re
      (1 (markdown-plus--alert-properties) prepend t))
     (,markdown-plus--video-re
      (0 (markdown-plus--video-properties) prepend))
+    (markdown-plus--fence-matcher
+     (0 (markdown-plus--fence-properties) prepend)
+     ;; the marker's own newline: un-hide it, but never put the icon on it
+     (3 '(face nil invisible nil) prepend t))
     (,markdown-plus--underline-re
      (2 (markdown-plus--markup-properties) prepend)
      (3 'markdown-plus-underline-face prepend)
@@ -314,7 +351,15 @@ Nil for an unknown type, which leaves the marker untouched."
   "Font-lock keywords added on top of markdown-mode's own.
 Appended so they run last; `prepend' then puts their faces on top.
 `display' and `invisible' are in markdown-mode's
-`font-lock-extra-managed-props', so font-lock cleans them up itself.")
+`font-lock-extra-managed-props', so font-lock cleans them up itself.
+
+Fences are handled here rather than in `markdown-plus--jit-fixup' so that
+they also work inside an Org `#+begin_src markdown' block:
+`org-src-font-lock-fontify-block' copies every property in the language
+mode's `font-lock-extra-managed-props' back into the Org buffer, but it
+fontifies its scratch buffer with font-lock only -- `jit-lock-functions'
+never run there, so anything applied in the jit-lock fixup is invisible
+to Org.")
 
 ;;;; Image preview ------------------------------------------------------------
 
@@ -583,42 +628,18 @@ re-hide under jit-lock."
 (defun markdown-plus--jit-fixup (beg end)
   "Run after font-lock during jit-lock fontification of BEG..END.
 
-1. Keep fence lines (```lang/```/~~~) from ever going invisible, and show
-   an icon in place of the raw markers unless the active appear region
-   covers that line.
-2. Remove the scaling `display' wrongly applied by sub/superscript
+1. Remove the scaling `display' wrongly applied by sub/superscript
    fontification to strikethrough ~~text~~.
-3. Re-reveal the active appear region so editing within it does not
+2. Re-reveal the active appear region so editing within it does not
    flicker between revealed and hidden.
+
+Fence lines are not handled here; see `markdown-plus--font-lock-keywords'
+for why they have to be a font-lock keyword instead.
 
 All steps check before modifying so unchanged lines are left alone."
   (when markdown-hide-markup
     (save-excursion
-      ;; (1) fence lines: never invisible; iconified unless revealed.
-      ;; Use `markdown-plus--region', never (point): during jit-lock
-      ;; redisplay point is moved into the fontified region and is not
-      ;; the real cursor position (same gotcha step 3 works around).
-      (goto-char beg)
-      (forward-line 0)
-      (while (< (point) end)
-        (when (looking-at markdown-plus--fence-re)
-          (let* ((lang (match-string-no-properties 2))
-                 (lbeg (line-beginning-position))
-                 (ltext-end (line-end-position))
-                 (lend (min (point-max) (1+ ltext-end)))
-                 (revealed (and markdown-plus--region
-                               (< (car markdown-plus--region) lend)
-                               (> (cdr markdown-plus--region) lbeg)))
-                 (want (unless revealed (markdown-plus--fence-display lang))))
-            (unless (and (null (get-text-property lbeg 'invisible))
-                        (equal (get-text-property lbeg 'display) want))
-              (with-silent-modifications
-                (remove-text-properties
-                 lbeg lend '(invisible nil display nil composition nil))
-                (when want
-                  (put-text-property lbeg ltext-end 'display want))))))
-        (forward-line 1))
-      ;; (2) strip subscript display wrongly added inside ~~strikethrough~~
+      ;; (1) strip subscript display wrongly added inside ~~strikethrough~~
       (goto-char beg)
       (let ((lim (min end (point-max))))
         (while (re-search-forward "~~\\(?:[^~\n]\\)+?~~" lim t)
@@ -626,7 +647,7 @@ All steps check before modifying so unchanged lines are left alone."
             (when (text-property-not-all mb me 'display nil)
               (with-silent-modifications
                 (remove-text-properties mb me '(display nil)))))))
-      ;; (3) keep the active appear region revealed.  Use the tracked
+      ;; (2) keep the active appear region revealed.  Use the tracked
       ;; region, never (point): during jit-lock redisplay point is moved
       ;; into the fontified region and is not the real cursor position.
       (when (and markdown-plus--region
