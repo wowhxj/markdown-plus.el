@@ -481,5 +481,125 @@ carrying the video keymap rather than the generic `image-map'."
     (should (equal (buffer-substring-no-properties (point-min) (point-max))
                    "hello\n"))))
 
+;;;; Org src blocks
+
+(require 'org)
+
+(defmacro markdown-plus-test--with-org (text &rest body)
+  "Run BODY in an `org-mode' buffer holding TEXT, point where `|' was.
+`markdown-mode-hook' carries `markdown-plus-mode' the way a real
+configuration does, which is what makes Org's native src fontification
+run markdown-plus inside its scratch buffer."
+  (declare (indent 1) (debug t))
+  `(let ((markdown-mode-hook '(markdown-plus-mode)))
+     (with-temp-buffer
+       (delay-mode-hooks (org-mode))
+       (insert ,text)
+       (goto-char (point-min))
+       (when (search-forward "|" nil t)
+         (delete-char -1))
+       (markdown-plus-org-mode 1)
+       (font-lock-ensure)
+       ,@body)))
+
+(defconst markdown-plus-test--org-block "\
+* S
+
+#+begin_src markdown
+```python
+print(1)
+```
+
+- **bold** x
+#+end_src
+
+plain org text
+")
+
+(ert-deftest markdown-plus-test-org-block-bounds ()
+  "The block body is recognised; the fence lines and Org text are outside it."
+  (markdown-plus-test--with-org markdown-plus-test--org-block
+    (goto-char (point-min))
+    (search-forward "print(1)")
+    (should (markdown-plus-org--block-bounds))
+    (goto-char (point-min))
+    (search-forward "plain org")
+    (should-not (markdown-plus-org--block-bounds))
+    (goto-char (point-min))
+    (search-forward "#+begin_src")
+    (should-not (markdown-plus-org--block-bounds))))
+
+(ert-deftest markdown-plus-test-org-block-other-language-ignored ()
+  "A src block in another language is left alone."
+  (markdown-plus-test--with-org
+      "#+begin_src python\nprint(1)\n#+end_src\n"
+    (goto-char (point-min))
+    (search-forward "print(1)")
+    (should-not (markdown-plus-org--block-bounds))))
+
+(ert-deftest markdown-plus-test-org-fence-rendered-without-this-mode ()
+  "Fence icons reach Org through font-lock alone, with no reveal involved.
+This is the property that lets the package cover Org without org-side code."
+  (markdown-plus-test--with-org markdown-plus-test--org-block
+    (goto-char (point-min))
+    (search-forward "```python")
+    (should (equal (get-text-property (match-beginning 0) 'display)
+                   (markdown-plus--fence-display "python")))
+    (should-not (invisible-p (match-beginning 0)))))
+
+(ert-deftest markdown-plus-test-org-reveal-on-point ()
+  "Point on the fence reveals it; leaving restores the icon."
+  (markdown-plus-test--with-org markdown-plus-test--org-block
+    (goto-char (point-min))
+    (search-forward "```python")
+    (goto-char (match-beginning 0))
+    (markdown-plus-org--post-command)
+    (should-not (get-text-property (point) 'display))
+    ;; leave the block entirely
+    (goto-char (point-max))
+    (markdown-plus-org--post-command)
+    (goto-char (point-min))
+    (search-forward "```python")
+    (should (equal (get-text-property (match-beginning 0) 'display)
+                   (markdown-plus--fence-display "python")))))
+
+(ert-deftest markdown-plus-test-org-reveal-is-element-granular ()
+  "Reveal uses the same element bounds a Markdown buffer would."
+  (markdown-plus-test--with-org markdown-plus-test--org-block
+    (goto-char (point-min))
+    (search-forward "**bold**")
+    (goto-char (1- (point)))
+    (markdown-plus-org--post-command)
+    (should (equal markdown-plus-org--region
+                   (save-excursion
+                     (let ((b (markdown-plus--element-bounds)))
+                       (cons (car b) (cdr b))))))
+    (should-not (invisible-p (car markdown-plus-org--region)))))
+
+(ert-deftest markdown-plus-test-org-no-reveal-outside-block ()
+  "Org text outside a Markdown block never reveals, whatever it looks like."
+  (markdown-plus-test--with-org
+      "* S\n\nsome *org* emphasis here\n"
+    (goto-char (point-min))
+    (search-forward "*org*")
+    (goto-char (1- (point)))
+    (markdown-plus-org--post-command)
+    (should-not markdown-plus-org--region)))
+
+(ert-deftest markdown-plus-test-org-mode-off-restores ()
+  "Turning the mode off puts back whatever was revealed."
+  (markdown-plus-test--with-org markdown-plus-test--org-block
+    (goto-char (point-min))
+    (search-forward "```python")
+    (goto-char (match-beginning 0))
+    (markdown-plus-org--post-command)
+    (should markdown-plus-org--region)
+    (markdown-plus-org-mode -1)
+    (should-not markdown-plus-org--region)
+    (goto-char (point-min))
+    (search-forward "```python")
+    (should (equal (get-text-property (match-beginning 0) 'display)
+                   (markdown-plus--fence-display "python")))))
+
 (provide 'markdown-plus-test)
 ;;; markdown-plus-test.el ends here

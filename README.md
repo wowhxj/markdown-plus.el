@@ -38,6 +38,28 @@ Org-mode-like WYSIWYG editing for Markdown, layered on top of
   markdown-mode alone ignores bare fragments. Use `C-c C-o` or click the
   link; `C-x C-x` goes back.
 - **Table auto-alignment** — GFM tables are aligned when you leave them.
+- **Org `#+begin_src markdown` blocks** — `markdown-plus-org-mode` extends
+  the reveal into Org buffers. See [Org src blocks](#org-src-blocks).
+
+## Org src blocks
+
+Org already renders Markdown inside a `#+begin_src markdown` block:
+`org-src-font-lock-fontify-block` runs markdown-mode over a scratch buffer
+and copies back every property in its `font-lock-extra-managed-props`,
+which covers `display` and `invisible`. So markdown-plus's font-lock
+keywords — alerts, video links, fence icons, `<u>` — show up in Org with
+nothing extra.
+
+Reveal-on-point does not travel that way: it runs from
+`post-command-hook` in the buffer being edited, and the scratch buffer is
+gone by then. `markdown-plus-org-mode` supplies just that half, at the
+same element granularity a Markdown buffer uses:
+
+```elisp
+(add-hook 'org-mode-hook #'markdown-plus-org-mode)
+```
+
+It calls nothing in Org, so Org is not a dependency.
 
 ## Requirements
 

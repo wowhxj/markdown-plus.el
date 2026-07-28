@@ -51,6 +51,12 @@
 ;;   * [text](#name) jumps to <a id="name"> in the same buffer, which is
 ;;     what makes an Org- or Pandoc-exported table of contents work.
 ;;   * Automatic table alignment when leaving a GFM table.
+;;   * `markdown-plus-org-mode' extends the reveal to Org
+;;     #+begin_src markdown blocks.  Org already renders them, by copying
+;;     markdown-mode's text properties out of its native-fontification
+;;     scratch buffer; this adds the reveal-on-point half, which cannot
+;;     travel that way.  Nothing in it calls Org, so Org is not a
+;;     dependency.  Add it to `org-mode-hook'.
 ;;
 ;; Usage:
 ;;
@@ -705,6 +711,105 @@ Counters jit-lock re-hiding after edits or scrolling."
             (when win
               (markdown-plus--jit-fixup (window-start win)
                                         (window-end win t)))))))))
+
+;;;; Org `#+begin_src markdown' blocks -----------------------------------------
+
+;; Rendering inside an Org src block comes for free: Org's native src
+;; fontification runs the language mode over a scratch buffer and copies back
+;; every property in its `font-lock-extra-managed-props', which for
+;; markdown-mode covers `display' and `invisible'.  So markdown-plus's
+;; font-lock keywords (alerts, videos, fences, <u>) already show up in Org.
+;;
+;; Reveal-on-point does not, because that is driven from `post-command-hook'
+;; in the buffer being edited, and the scratch buffer is long gone by then.
+;; `markdown-plus-org-mode' supplies just that missing half.  Nothing here
+;; calls into Org, so no dependency on it is introduced.
+
+(defconst markdown-plus-org--src-langs '("markdown" "md" "gfm")
+  "Src block languages treated as Markdown.")
+
+(defvar-local markdown-plus-org--region nil
+  "The currently revealed region as a cons (BEG . END), or nil.")
+
+(defun markdown-plus-org--block-bounds ()
+  "Return (BEG . END) of the Markdown src block body point is inside, or nil.
+BEG is the first character after the `#+begin_src' line, END the beginning
+of the `#+end_src' line."
+  (save-excursion
+    (let ((case-fold-search t)
+          (pos (point))
+          head-end)
+      (forward-line 0)
+      (when (and (re-search-backward
+                  "^[ \t]*#\\+begin_src[ \t]+\\([^ \t\n]+\\)" nil t)
+                 (member (downcase (match-string 1))
+                         markdown-plus-org--src-langs))
+        (setq head-end (line-end-position))
+        (when (re-search-forward "^[ \t]*#\\+end_src\\>" nil t)
+          (let ((tail-beg (line-beginning-position)))
+            (when (and (> pos head-end) (< pos tail-beg))
+              (cons (min (1+ head-end) tail-beg) tail-beg))))))))
+
+(defun markdown-plus-org--reveal (beg end)
+  "Reveal raw Markdown markup in BEG..END.
+`org-src-invisible' is Org's alias for the `invisible' it copied over, so
+both have to go."
+  (with-silent-modifications
+    (remove-text-properties
+     beg end
+     '(org-src-invisible nil invisible nil display nil composition nil))))
+
+(defun markdown-plus-org--restore (beg end)
+  "Re-hide BEG..END by refontifying it, extended to whole lines.
+Refontifying is enough to restore everything: it re-runs Org's src block
+fontification, which copies the properties back."
+  (let ((b (save-excursion (goto-char beg) (line-beginning-position)))
+        (e (save-excursion (goto-char end) (line-end-position))))
+    (with-silent-modifications
+      (font-lock-flush b e)
+      (font-lock-ensure b e))))
+
+(defun markdown-plus-org--post-command ()
+  "Reveal the Markdown element at point and re-hide the previous one.
+Reuses `markdown-plus--element-bounds', so an Org src block reveals at the
+same granularity a Markdown buffer does; the result is clamped to the block
+so a match can never leak into the surrounding Org text."
+  (condition-case nil
+      (let* ((body (markdown-plus-org--block-bounds))
+             (bounds (and body (markdown-plus--element-bounds)))
+             (new (when bounds
+                    (cons (max (car body) (car bounds))
+                          (min (cdr body) (cdr bounds))))))
+        ;; Clear the region before restoring, for the same reason
+        ;; `markdown-plus--post-command' does.
+        (when (and markdown-plus-org--region
+                   (not (equal markdown-plus-org--region new)))
+          (let ((old markdown-plus-org--region))
+            (setq markdown-plus-org--region nil)
+            (markdown-plus-org--restore (car old) (cdr old))))
+        (when (and new (not (equal new markdown-plus-org--region)))
+          (markdown-plus-org--reveal (car new) (cdr new))
+          (setq markdown-plus-org--region new)))
+    (error nil)))
+
+;;;###autoload
+(define-minor-mode markdown-plus-org-mode
+  "Reveal raw Markdown markup at point inside Org `#+begin_src markdown' blocks.
+
+Org already renders the markup, by copying markdown-mode's text properties
+out of its native-fontification scratch buffer.  This mode adds the missing
+half: the element at point shows its raw source, and re-hides on leaving.
+
+Add it to `org-mode-hook'."
+  :lighter " M+org"
+  :group 'markdown-plus
+  (if markdown-plus-org-mode
+      (add-hook 'post-command-hook #'markdown-plus-org--post-command nil t)
+    (remove-hook 'post-command-hook #'markdown-plus-org--post-command t)
+    (when markdown-plus-org--region
+      (let ((old markdown-plus-org--region))
+        (setq markdown-plus-org--region nil)
+        (markdown-plus-org--restore (car old) (cdr old))))))
 
 ;;;; Table auto-alignment -----------------------------------------------------
 
