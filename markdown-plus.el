@@ -769,6 +769,29 @@ fontification, which copies the properties back."
       (font-lock-flush b e)
       (font-lock-ensure b e))))
 
+(defun markdown-plus-org--after-change (beg end _len)
+  "Strip hiding properties that text just typed into BEG..END inherited.
+`self-insert-command' inserts with inheritance, so a character typed right
+after hidden markup -- the closing backtick of `code', say -- picks up its
+`invisible' property and vanishes.  A Markdown buffer recovers by itself:
+`invisible' is in markdown-mode's `font-lock-extra-managed-props', so the
+next font-lock pass unfontifies it away.  Org copies the same property under
+the `org-src-invisible' alias, which its own font-lock does not manage and
+`org-src-font-lock-fontify-block' does not clear -- it removes only `face' --
+so there the text stays hidden for good.
+
+Org's folding uses `invisible' as well, hence the check that the change is
+inside a Markdown src block."
+  (when (and (> end beg)
+             (or (text-property-not-all beg end 'invisible nil)
+                 (text-property-not-all beg end 'org-src-invisible nil)))
+    (save-excursion
+      (goto-char beg)
+      (when (markdown-plus-org--block-bounds)
+        (with-silent-modifications
+          (remove-text-properties
+           beg end '(invisible nil org-src-invisible nil)))))))
+
 (defun markdown-plus-org--post-command ()
   "Reveal the Markdown element at point and re-hide the previous one.
 Reuses `markdown-plus--element-bounds', so an Org src block reveals at the
@@ -804,8 +827,11 @@ Add it to `org-mode-hook'."
   :lighter " M+org"
   :group 'markdown-plus
   (if markdown-plus-org-mode
-      (add-hook 'post-command-hook #'markdown-plus-org--post-command nil t)
+      (progn
+        (add-hook 'post-command-hook #'markdown-plus-org--post-command nil t)
+        (add-hook 'after-change-functions #'markdown-plus-org--after-change nil t))
     (remove-hook 'post-command-hook #'markdown-plus-org--post-command t)
+    (remove-hook 'after-change-functions #'markdown-plus-org--after-change t)
     (when markdown-plus-org--region
       (let ((old markdown-plus-org--region))
         (setq markdown-plus-org--region nil)

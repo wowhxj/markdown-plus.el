@@ -601,5 +601,76 @@ This is the property that lets the package cover Org without org-side code."
     (should (equal (get-text-property (match-beginning 0) 'display)
                    (markdown-plus--fence-display "python")))))
 
+(defun markdown-plus-test--type (string)
+  "Type STRING into the current buffer the way a user would.
+`self-insert-command' is what matters here: it inserts with inheritance, so
+a character typed against hidden markup picks up its `invisible' property."
+  (dolist (char (string-to-list string))
+    (let ((last-command-event char))
+      (self-insert-command 1))
+    (markdown-plus-org--post-command)
+    (font-lock-flush (line-beginning-position) (line-end-position))
+    (font-lock-ensure (line-beginning-position) (line-end-position))))
+
+(defun markdown-plus-test--visible (beg end)
+  "Return the text of BEG..END that is actually on screen."
+  (let ((out "") (pos beg))
+    (while (< pos end)
+      (unless (invisible-p pos)
+        (setq out (concat out (char-to-string (char-after pos)))))
+      (setq pos (1+ pos)))
+    out))
+
+(ert-deftest markdown-plus-test-org-typing-after-hidden-markup ()
+  "Text typed right after hidden markup stays visible.
+Only the markup itself -- the two backticks -- may disappear.  Without the
+`after-change-functions' fix the inherited `invisible' hides everything
+typed from there on, and Org never clears it."
+  (markdown-plus-test--with-org
+      "* S\n\n#+begin_src markdown\n2. path `~/wiki`\n#+end_src\n"
+    (goto-char (point-min))
+    (search-forward "`~/wiki`")
+    (markdown-plus-test--type " and more")
+    (let ((beg (line-beginning-position))
+          (end (line-end-position)))
+      (should (equal (markdown-plus-test--visible beg end)
+                     "2. path ~/wiki and more")))))
+
+(ert-deftest markdown-plus-test-org-typed-newlines-survive ()
+  "Newlines typed after hidden markup do not swallow the blank lines."
+  (markdown-plus-test--with-org
+      "* S\n\n#+begin_src markdown\n2. path `~/wiki`\n#+end_src\n"
+    (goto-char (point-min))
+    (search-forward "`~/wiki`")
+    (markdown-plus-test--type "\n\n\nhello")
+    (let* ((beg (progn (goto-char (point-min))
+                       (search-forward "#+begin_src markdown\n")
+                       (point)))
+           (end (progn (search-forward "#+end_src") (line-beginning-position)))
+           (raw (buffer-substring-no-properties beg end)))
+      (should (equal (markdown-plus-test--visible beg end)
+                     (replace-regexp-in-string "`" "" raw))))))
+
+(ert-deftest markdown-plus-test-org-after-change-stays-in-block ()
+  "The `invisible' strip is confined to Markdown src blocks.
+Org hides its own folded text with `invisible', so clearing the property
+outside a block would unfold the buffer."
+  (markdown-plus-test--with-org
+      "* S\n\nplain org text\n\n#+begin_src markdown\nin block\n#+end_src\n"
+    ;; Outside the block: left alone.
+    (goto-char (point-min))
+    (search-forward "plain")
+    (let ((beg (match-beginning 0)) (end (match-end 0)))
+      (put-text-property beg end 'invisible 'org-fold-outline)
+      (markdown-plus-org--after-change beg end 0)
+      (should (eq (get-text-property beg 'invisible) 'org-fold-outline)))
+    ;; Inside it: stripped.
+    (goto-char (point-min))
+    (search-forward "in block")
+    (let ((beg (match-beginning 0)) (end (match-end 0)))
+      (put-text-property beg end 'invisible 'markdown-markup)
+      (markdown-plus-org--after-change beg end 0)
+      (should-not (get-text-property beg 'invisible)))))
+
 (provide 'markdown-plus-test)
 ;;; markdown-plus-test.el ends here
