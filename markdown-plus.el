@@ -186,6 +186,10 @@ Group 1 is the fence delimiter, group 2 the language (empty when closing).")
   "Face for a rendered video link."
   :group 'markdown-plus)
 
+(defface markdown-plus-heading-level-face '((t (:inherit shadow)))
+  "Face for the `H1'/`H2'/... label substituted for a heading's `#' markup."
+  :group 'markdown-plus)
+
 (defun markdown-plus--color-dark-p (color)
   "Return non-nil when COLOR is perceptually dark."
   (let* ((rgb (color-values color))
@@ -270,6 +274,17 @@ Nil for an unknown type, which leaves the marker untouched."
              ,@(when markdown-hide-markup
                  `(display ,(markdown-plus--icon-label (nth 1 spec))))))))
 
+(defun markdown-plus--heading-level-properties ()
+  "Return font-lock properties labelling the ATX heading markup just matched.
+Assumes match data from `markdown-match-propertized-text' on the
+`markdown-heading' property, whose group 4 is the heading's `#' markup
+run (see `markdown-regex-header').  Nil when markup is not hidden, or
+for a setext heading, which has no group-4 markup to replace."
+  (when (and markdown-hide-markup (match-beginning 4))
+    `(face nil display ,(propertize
+                          (format "H%d " (cl-count ?# (match-string-no-properties 4)))
+                          'face 'markdown-plus-heading-level-face))))
+
 (defvar markdown-plus-video-map
   (let ((map (make-sparse-keymap)))
     ;; `C-c C-o' rather than `RET': point on the tag means the tag is
@@ -353,7 +368,9 @@ cursor position during jit-lock redisplay."
     (,markdown-plus--underline-re
      (2 (markdown-plus--markup-properties) prepend)
      (3 'markdown-plus-underline-face prepend)
-     (4 (markdown-plus--markup-properties) prepend)))
+     (4 (markdown-plus--markup-properties) prepend))
+    ((lambda (last) (markdown-match-propertized-text 'markdown-heading last))
+     (4 (markdown-plus--heading-level-properties) prepend t)))
   "Font-lock keywords added on top of markdown-mode's own.
 Appended so they run last; `prepend' then puts their faces on top.
 `display' and `invisible' are in markdown-mode's

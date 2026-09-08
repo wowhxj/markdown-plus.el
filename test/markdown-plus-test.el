@@ -467,6 +467,33 @@ carrying the video keymap rather than the generic `image-map'."
     (should (memq 'markdown-plus-underline-face
                   (ensure-list (get-text-property (point) 'face))))))
 
+;;;; Heading level labels
+
+(ert-deftest markdown-plus-test-heading-level-label ()
+  "An ATX heading's `#' markup is replaced by a gray `H<level>' label."
+  (markdown-plus-test--with "## Title\n"
+    (markdown-plus-mode 1)
+    (font-lock-ensure)
+    (should (equal (get-text-property (point-min) 'display)
+                   (propertize "H2 " 'face 'markdown-plus-heading-level-face)))))
+
+(ert-deftest markdown-plus-test-heading-level-label-ignores-code-fence ()
+  "A `#'-prefixed comment inside a code fence gets no level label."
+  (markdown-plus-test--with "```python\n# not a heading\n```\n"
+    (markdown-plus-mode 1)
+    (font-lock-ensure)
+    (goto-char (point-min))
+    (search-forward "# not")
+    (should-not (get-text-property (match-beginning 0) 'display))))
+
+(ert-deftest markdown-plus-test-heading-level-label-off-when-markup-shown ()
+  "No label is added when `markdown-hide-markup' is nil."
+  (markdown-plus-test--with "# Title\n"
+    (markdown-plus-mode 1)
+    (setq-local markdown-hide-markup nil)
+    (font-lock-flush) (font-lock-ensure)
+    (should-not (get-text-property (point-min) 'display))))
+
 ;;;; Emphasis editing
 
 (ert-deftest markdown-plus-test-insert-underline-toggles ()
