@@ -494,6 +494,50 @@ carrying the video keymap rather than the generic `image-map'."
     (font-lock-flush) (font-lock-ensure)
     (should-not (get-text-property (point-min) 'display))))
 
+;;;; Org-style heading commands
+
+(ert-deftest markdown-plus-test-insert-heading-after-subtree ()
+  "C-RET equivalent: new same-level heading after the current subtree."
+  (markdown-plus-test--with "## A\n\nbody a\n\n## B\n\nbody b\n"
+    (goto-char (point-min))
+    (search-forward "body a")
+    (markdown-plus-insert-heading-after-subtree)
+    (insert "NEW")
+    (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                   "## A\n\nbody a\n\n## NEW\n\n## B\n\nbody b\n"))))
+
+(ert-deftest markdown-plus-test-insert-heading-after-subtree-no-heading ()
+  "With no enclosing heading, the new heading lands at the end, level 1."
+  (markdown-plus-test--with "just a paragraph\n"
+    (goto-char (point-max))
+    (markdown-plus-insert-heading-after-subtree)
+    (insert "First")
+    (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                   "just a paragraph\n\n# First"))))
+
+(ert-deftest markdown-plus-test-insert-heading-at-point ()
+  "M-RET equivalent: new same-level heading at point, in the body text."
+  (markdown-plus-test--with "## Title\n\nbody\n"
+    (goto-char (point-max))
+    (markdown-plus-insert-heading)
+    (insert "NEW")
+    (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                   "## Title\n\nbody\n\n## NEW"))))
+
+(ert-deftest markdown-plus-test-insert-heading-defers-to-list-item ()
+  "On a list item, M-RET continues the list instead of starting a heading."
+  (markdown-plus-test--with "- item one|\n"
+    (font-lock-ensure)
+    (markdown-plus-insert-heading)
+    (insert "item two")
+    (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                   "- item one\n- item two\n"))))
+
+(ert-deftest markdown-plus-test-consult-heading-without-consult ()
+  "Without `consult' installed, the command errors instead of failing oddly."
+  (markdown-plus-test--with "# Title\n"
+    (should-error (markdown-plus-consult-heading) :type 'user-error)))
+
 ;;;; Emphasis editing
 
 (ert-deftest markdown-plus-test-insert-underline-toggles ()

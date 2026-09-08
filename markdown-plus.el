@@ -960,6 +960,56 @@ hidden and revealed like the native markup."
   (markdown--insert-common "<u>" "</u>" markdown-plus--underline-re 1 3
                            'markdown-plus-underline-face t))
 
+;;;; Heading insertion / jump, Org-style ---------------------------------------
+
+(defun markdown-plus--enclosing-heading-level ()
+  "Return the level of the heading enclosing point, or nil if none.
+Moves point to that heading's start; callers that only want the level
+wrap this in `save-excursion'."
+  (condition-case nil
+      (progn (markdown-back-to-heading) (markdown-outline-level))
+    (error nil)))
+
+;;;###autoload
+(defun markdown-plus-insert-heading ()
+  "Insert a heading at point, at the same level as the enclosing one.
+Splits the line at point the way `markdown-insert-header' always does:
+text after point moves onto the new heading.  Mirrors Org's `M-RET'
+\(`org-meta-return'), except on a list item, where it defers to
+`markdown-insert-list-item' instead of starting a heading -- Org's
+M-RET is itself list-aware in exactly this way."
+  (interactive "*")
+  (if (markdown-list-item-at-point-p)
+      (call-interactively #'markdown-insert-list-item)
+    (let ((level (save-excursion (or (markdown-plus--enclosing-heading-level) 1))))
+      (markdown-insert-header level "" nil))))
+
+;;;###autoload
+(defun markdown-plus-insert-heading-after-subtree ()
+  "Insert a heading after the current subtree, at the same level.
+Mirrors Org's `C-RET' (`org-insert-heading-respect-content'): always a
+heading, regardless of what point is inside."
+  (interactive "*")
+  (let* ((found (save-excursion (markdown-plus--enclosing-heading-level)))
+         (level (or found 1)))
+    (if found (markdown-end-of-subtree) (goto-char (point-max)))
+    (markdown-insert-header level "" nil)))
+
+;;;###autoload
+(defun markdown-plus-consult-heading ()
+  "Jump to a heading in this buffer, searched and filtered via `consult'.
+Mirrors Org's `C-c C-j' (`org-goto').  Requires the `consult' package."
+  (interactive)
+  ;; `consult-imenu' lives in its own file, not the umbrella `consult'
+  ;; feature; `fboundp' alone would already be true from an unloaded
+  ;; package.el autoload, so try that before forcing a `require'.
+  (unless (or (fboundp 'consult-imenu) (require 'consult-imenu nil t))
+    (user-error "markdown-plus-consult-heading requires the `consult' package"))
+  ;; Scope the index to headings only; footnotes are irrelevant to a
+  ;; heading jump and would just be noise in the candidate list.
+  (let ((markdown-add-footnotes-to-imenu nil))
+    (consult-imenu)))
+
 ;;;; Minor mode ---------------------------------------------------------------
 
 (defvar markdown-plus-mode-map
@@ -972,6 +1022,13 @@ hidden and revealed like the native markup."
     (define-key map (kbd "s-i") #'markdown-insert-italic)
     (define-key map (kbd "s-`") #'markdown-insert-code)
     (define-key map (kbd "s-_") #'markdown-plus-insert-underline)
+    ;; Org-style heading commands.  These shadow markdown-mode's own
+    ;; `M-RET'/`C-c C-j' (both bound to `markdown-insert-list-item' there);
+    ;; `markdown-plus-insert-heading' still reaches that command on a list
+    ;; item, so list continuation keeps working.
+    (define-key map (kbd "M-RET") #'markdown-plus-insert-heading)
+    (define-key map (kbd "<C-return>") #'markdown-plus-insert-heading-after-subtree)
+    (define-key map (kbd "C-c C-j") #'markdown-plus-consult-heading)
     map)
   "Keymap for `markdown-plus-mode'.")
 
