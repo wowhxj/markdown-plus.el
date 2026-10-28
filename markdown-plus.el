@@ -115,6 +115,16 @@ Clips shorter than this fall back to the first frame."
   :type 'string
   :group 'markdown-plus)
 
+(defcustom markdown-plus-pandoc-command "pandoc"
+  "Pandoc executable used to export Markdown documents."
+  :type 'string
+  :group 'markdown-plus)
+
+(defcustom markdown-plus-pandoc-pdf-engine "xelatex"
+  "PDF engine passed to Pandoc when exporting PDF."
+  :type 'string
+  :group 'markdown-plus)
+
 (defcustom markdown-plus-alert-types
   ;; The leading characters are Nerd Font icons; a display that cannot show
   ;; one falls back to the bare word.  Emoji are avoided on purpose: the
@@ -1012,6 +1022,145 @@ Mirrors Org's `C-c C-j' (`org-goto').  Requires the `consult' package."
   (let ((markdown-add-footnotes-to-imenu nil))
     (consult-imenu)))
 
+;;;; Export -------------------------------------------------------------------
+
+(defconst markdown-plus--export-formats
+  '((?o "org" "Org") (?h "html" "HTML") (?p "pdf" "PDF") (?d "docx" "DOCX"))
+  "Pandoc output formats offered by `markdown-plus-export-dispatch'.")
+
+(defun markdown-plus--export-to (format &optional open)
+  "Export the current buffer to Pandoc FORMAT and return the output path.
+When OPEN is non-nil, open the resulting HTML file in a browser."
+  (unless buffer-file-name
+    (user-error "Visit a Markdown file before exporting"))
+  (let* ((entry (cl-find-if (lambda (item) (equal format (cadr item)))
+                            markdown-plus--export-formats))
+         (pandoc (executable-find markdown-plus-pandoc-command)))
+    (unless entry
+      (user-error "Unsupported export format: %s" format))
+    (unless pandoc
+      (user-error "Cannot find Pandoc executable: %s" markdown-plus-pandoc-command))
+    (let* ((extension (cadr entry))
+           (output (concat (file-name-sans-extension buffer-file-name) "." extension))
+           (arguments (list "--from=gfm" (concat "--to=" format)
+                            "--output" output))
+           (errors (get-buffer-create "*markdown-plus export*")))
+      (when (and (file-exists-p output)
+                 (not (yes-or-no-p (format "Overwrite %s? " output))))
+        (user-error "Export cancelled"))
+      (when (equal format "html")
+        (setq arguments (append arguments '("--standalone"))))
+      (when (equal format "pdf")
+        (setq arguments
+              (append arguments (list (concat "--pdf-engine=" markdown-plus-pandoc-pdf-engine)))))
+      (with-current-buffer errors (erase-buffer))
+      (let ((status (apply #'call-process-region
+                           (point-min) (point-max) pandoc nil errors nil arguments)))
+        (unless (and (numberp status) (= status 0))
+          (display-buffer errors)
+          (user-error "Pandoc export failed (%s); see %s" status (buffer-name errors))))
+      (message "Exported to %s" output)
+      (when open
+        (browse-url-of-file output))
+      output)))
+
+(defconst markdown-plus--export-dispatch-buffer "*Markdown Export Dispatcher*"
+  "Buffer used to display the export dispatcher help.")
+
+(defconst markdown-plus--export-dispatch-help
+  (concat
+   "[h] Export to HTML\n"
+   "    [h] As HTML file                 [o] As HTML file and open\n\n"
+   "[o] Export to Org\n"
+   "    [o] As Org file\n\n"
+   "[p] Export to PDF\n"
+   "    [p] As PDF file\n\n"
+   "[d] Export to DOCX\n"
+   "    [d] As DOCX file\n\n"
+   "[q] Exit / Main menu\n")
+  "Help text displayed by `markdown-plus-export-dispatch'.")
+
+(defun markdown-plus--export-dispatch-refresh (buffer subtree)
+  "Refresh export dispatcher BUFFER, showing SUBTREE scope when non-nil."
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert (format "[C-s] Export scope: %s\n\n%s"
+                      (if subtree "Subtree" "Buffer")
+                      markdown-plus--export-dispatch-help))
+      (save-excursion
+        (goto-char (point-min))
+        (while (re-search-forward "\\[\\([^]]+\\)\\]" nil t)
+          (add-face-text-property (match-beginning 1) (match-end 1)
+                                  'help-key-binding))))
+    (goto-char (point-min))
+    (let ((window (get-buffer-window buffer)))
+      (when window (fit-window-to-buffer window 20)))))
+
+(defun markdown-plus--export-subtree-bounds ()
+  "Return the current heading subtree as a (START . END) cons."
+  (unless (markdown-plus--enclosing-heading-level)
+    (user-error "Point is not inside a Markdown heading"))
+  (let ((start (point)))
+    (cons start (markdown-end-of-subtree))))
+
+;;;###autoload
+(defun markdown-plus-export-dispatch ()
+  "Display an Org-style export menu for the current Markdown buffer.
+Use `C-s' to toggle buffer/subtree scope, `h h' for HTML, or `h o' to open it."
+  (interactive)
+  (let ((source-buffer (current-buffer))
+        (menu-buffer (get-buffer-create markdown-plus--export-dispatch-buffer))
+        first-key result subtree)
+    (save-window-excursion
+      (pop-to-buffer menu-buffer '(display-buffer-pop-up-window))
+      (setq-local cursor-type nil
+                  header-line-format "Use SPC, DEL, C-n, or C-p to navigate.")
+      (markdown-plus--export-dispatch-refresh menu-buffer subtree)
+      (unwind-protect
+          (catch 'dispatch
+            (while t
+              (let ((key (read-event "Export command: ")))
+                (cond
+                 ((eq key 19)
+                  (setq subtree (not subtree))
+                  (markdown-plus--export-dispatch-refresh menu-buffer subtree))
+                 ((eq key 32) (scroll-up-command))
+                 ((memq key '(127 8)) (scroll-down-command))
+                 ((eq key 14) (scroll-up-command 1))
+                 ((eq key 16) (scroll-down-command 1))
+                 ((memq key '(?q ?Q))
+                  (if first-key
+                      (setq first-key nil)
+                    (throw 'dispatch nil)))
+                 ((not first-key)
+                  (if (assq key markdown-plus--export-formats)
+                      (setq first-key key)
+                    (ding)
+                    (message "Invalid key")))
+                 (t
+                  (let* ((entry (assq first-key markdown-plus--export-formats))
+                         (format (cadr entry))
+                         (open (and (equal format "html") (eq key ?o)))
+                         (valid (or open (eq key first-key))))
+                    (if valid
+                        (progn
+                          (setq result (cons format open))
+                          (throw 'dispatch result))
+                      (ding)
+                      (message "Invalid key"))))))))
+        (when (buffer-live-p menu-buffer)
+          (kill-buffer menu-buffer))))
+    (when result
+      (with-current-buffer source-buffer
+        (if subtree
+            (let ((bounds (markdown-plus--export-subtree-bounds)))
+              (save-excursion
+                (save-restriction
+                  (narrow-to-region (car bounds) (cdr bounds))
+                  (markdown-plus--export-to (car result) (cdr result)))))
+          (markdown-plus--export-to (car result) (cdr result)))))))
+
 ;;;; Clipboard paste ----------------------------------------------------------
 
 (defun markdown-plus--clipboard-selection (target)
@@ -1166,6 +1315,7 @@ Plain text uses the normal Emacs `yank' command."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-x C-v") #'markdown-plus-show-images)
     (define-key map (kbd "C-c C-x C-r") #'markdown-plus-hide-images)
+    (define-key map (kbd "C-c C-e") #'markdown-plus-export-dispatch)
     ;; macOS-style emphasis toggles; the markdown-mode commands remove the
     ;; markup again when point is already inside it.
     (define-key map (kbd "s-b") #'markdown-insert-bold)

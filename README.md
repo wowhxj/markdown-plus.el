@@ -39,6 +39,13 @@ Org-mode-like WYSIWYG editing for Markdown, layered on top of
   cross-references, so an exported table of contents is navigable.
   markdown-mode alone ignores bare fragments. Use `C-c C-o` or click the
   link; `C-x C-x` goes back.
+- **Pandoc export** — `C-c C-e` opens an Org-style dispatcher buffer for
+  Org, standalone HTML, PDF, and DOCX. `C-s` toggles Buffer/Subtree scope;
+  subtree export includes the heading at point and its descendants. Choose
+  `h h` for an HTML file or `h o` to open it in a browser; `o o`, `p p`, and
+  `d d` write Org, PDF, and DOCX files. Outputs use the Markdown file's
+  directory and basename; existing outputs require confirmation. PDF export
+  uses XeLaTeX by default.
 - **Table auto-alignment** — GFM tables are aligned when you leave them.
 - **Org `#+begin_src markdown` blocks** — `markdown-plus-org-mode` extends
   the reveal into Org buffers. See [Org src blocks](#org-src-blocks).
@@ -114,6 +121,7 @@ Or enable it on demand with `M-x markdown-plus-mode` in a Markdown buffer.
 | `s-v`         | paste clipboard text, files, or images |
 | `C-+` / `C--` | enlarge / shrink the HTML image at point by 100 px |
 | `C-c C-o`     | follow the thing at point — anchor links and video links included |
+| `C-c C-e`     | Pandoc export: `h h` HTML file, `h o` open HTML; `o o` Org, `p p` PDF, `d d` DOCX |
 
 On macOS `s-` is the Command key. All four emphasis commands toggle:
 they wrap the region or the word at point, and remove the markup again
@@ -130,6 +138,8 @@ when point is already inside it.
 - `markdown-plus-max-image-size` — `(MAX-WIDTH . MAX-HEIGHT)` in pixels.
 - `markdown-plus-image-cache-dir` — where remote images are cached.
 - `markdown-plus-alert-types` — label and colour per GitHub alert type.
+- `markdown-plus-pandoc-command` — Pandoc executable used for exports.
+- `markdown-plus-pandoc-pdf-engine` — PDF engine (default `xelatex`).
 
 ## Tests
 

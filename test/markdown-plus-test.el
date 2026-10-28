@@ -833,5 +833,140 @@ outside a block would unfold the buffer."
       (markdown-plus-paste))
     (should (equal (buffer-string) "clipboard text"))))
 
+;;;; Export
+
+(ert-deftest markdown-plus-test-export-dispatch-html-file-and-open-keys ()
+  "C-c C-e h h exports HTML; C-c C-e h o selects browser opening."
+  (let ((keys '(?h ?h)) selected opened)
+    (cl-letf (((symbol-function 'read-event)
+               (lambda (&rest _) (pop keys)))
+              ((symbol-function 'markdown-plus--export-to)
+               (lambda (format &optional open)
+                 (setq selected format opened open))))
+      (markdown-plus-export-dispatch))
+    (should (equal selected "html"))
+    (should-not opened)
+    (setq keys '(?h ?o))
+    (cl-letf (((symbol-function 'read-event)
+               (lambda (&rest _) (pop keys)))
+              ((symbol-function 'markdown-plus--export-to)
+               (lambda (format &optional open)
+                 (setq selected format opened open))))
+      (markdown-plus-export-dispatch))
+    (should (equal selected "html"))
+    (should opened)
+    (should (eq (lookup-key markdown-plus-mode-map (kbd "C-c C-e"))
+                'markdown-plus-export-dispatch))))
+
+(ert-deftest markdown-plus-test-export-dispatch-subtree-scope-includes-descendants-only ()
+  "C-s exports the current heading and descendants, excluding its sibling."
+  (let ((keys '(19 ?h ?h)) exported-format exported-text)
+    (with-temp-buffer
+      (markdown-mode)
+      (markdown-plus-mode)
+      (insert "# Parent\nparent text\n## Child\nchild text\n# Sibling\nsibling text\n")
+      (goto-char (point-min))
+      (search-forward "parent text")
+      (cl-letf (((symbol-function 'read-event)
+                 (lambda (&rest _)
+                   (when (eq (car keys) ?h)
+                     (with-current-buffer markdown-plus--export-dispatch-buffer
+                       (should (string-match-p "Export scope: Subtree" (buffer-string)))))
+                   (pop keys)))
+                ((symbol-function 'markdown-plus--export-to)
+                 (lambda (format &optional _open)
+                   (setq exported-format format
+                         exported-text (buffer-substring-no-properties
+                                        (point-min) (point-max))))))
+        (markdown-plus-export-dispatch))
+      (should (equal exported-format "html"))
+      (should (equal exported-text
+                     "# Parent\nparent text\n## Child\nchild text")))))
+
+(ert-deftest markdown-plus-test-export-dispatch-subtree-requires-heading ()
+  "Subtree export reports a user error when point has no enclosing heading."
+  (let ((keys '(19 ?o ?o)))
+    (with-temp-buffer
+      (markdown-mode)
+      (markdown-plus-mode)
+      (insert "Plain text only\n")
+      (cl-letf (((symbol-function 'read-event)
+                 (lambda (&rest _) (pop keys)))
+                ((symbol-function 'markdown-plus--export-to)
+                 (lambda (&rest _) (ert-fail "Export should not run"))))
+        (should-error (markdown-plus-export-dispatch) :type 'user-error)))))
+
+(ert-deftest markdown-plus-test-export-formats-use-pandoc-and-safe-paths ()
+  "All supported export formats use Pandoc and same-directory output files."
+  (let* ((dir (make-temp-file "markdown-plus-export" t))
+         (buffer-file-name (expand-file-name "notes.md" dir))
+         (markdown-plus-pandoc-command "pandoc")
+         (markdown-plus-pandoc-pdf-engine "xelatex")
+         calls)
+    (unwind-protect
+        (with-temp-buffer
+          (setq buffer-file-name (expand-file-name "notes.md" dir))
+          (insert "# Export me\n")
+          (cl-letf (((symbol-function 'executable-find) (lambda (_) "/usr/bin/pandoc"))
+                    ((symbol-function 'call-process-region)
+                     (lambda (beg end _program _delete destination _display &rest args)
+                       (push args calls)
+                       (should (equal (buffer-substring-no-properties beg end) "# Export me\n"))
+                       (let ((output (cadr (member "--output" args))))
+                         (write-region "generated" nil output nil 'silent))
+                       (if (bufferp destination) (with-current-buffer destination (erase-buffer)))
+                       0)))
+            (dolist (format '("org" "html" "pdf" "docx"))
+              (let ((output (markdown-plus--export-to format)))
+                (should (equal output (expand-file-name (concat "notes." format) dir)))
+                (should (file-exists-p output))))
+            (should (= (length calls) 4))
+            (should (member "--from=gfm" (car calls)))
+            (should (member "--to=docx" (car calls)))
+            (should (member "--standalone" (nth 2 calls)))
+            (should (member "--pdf-engine=xelatex" (nth 1 calls)))))
+      (delete-directory dir t))))
+
+(ert-deftest markdown-plus-test-export-open-html-opens-browser ()
+  "The HTML open action sends the generated file to `browse-url-of-file'."
+  (let* ((dir (make-temp-file "markdown-plus-export" t))
+         (buffer-file-name (expand-file-name "notes.md" dir))
+         (markdown-plus-pandoc-command "pandoc")
+         opened)
+    (unwind-protect
+        (with-temp-buffer
+          (setq buffer-file-name (expand-file-name "notes.md" dir))
+          (insert "# Open me\n")
+          (cl-letf (((symbol-function 'executable-find) (lambda (_) "/usr/bin/pandoc"))
+                    ((symbol-function 'call-process-region)
+                     (lambda (_beg _end _program _delete _destination _display &rest args)
+                       (write-region "html" nil (cadr (member "--output" args)) nil 'silent)
+                       0))
+                    ((symbol-function 'browse-url-of-file)
+                     (lambda (file) (setq opened file))))
+            (markdown-plus--export-to "html" t)
+            (should (equal opened (expand-file-name "notes.html" dir)))))
+      (delete-directory dir t))))
+
+(ert-deftest markdown-plus-test-export-refuses-overwrite-without-confirmation ()
+  "Declining an overwrite leaves the existing export unchanged."
+  (let* ((dir (make-temp-file "markdown-plus-export" t))
+         (buffer-file-name (expand-file-name "notes.md" dir))
+         (output (expand-file-name "notes.org" dir)))
+    (unwind-protect
+        (progn
+          (write-region "keep" nil output nil 'silent)
+          (with-temp-buffer
+            (setq buffer-file-name (expand-file-name "notes.md" dir))
+            (cl-letf (((symbol-function 'executable-find) (lambda (_) "/usr/bin/pandoc"))
+                      ((symbol-function 'yes-or-no-p) (lambda (_) nil))
+                      ((symbol-function 'call-process-region)
+                       (lambda (&rest _) (ert-fail "Pandoc should not run"))))
+              (should-error (markdown-plus--export-to "org") :type 'user-error)))
+          (with-temp-buffer
+            (insert-file-contents output)
+            (should (equal (buffer-string) "keep"))))
+      (delete-directory dir t))))
+
 (provide 'markdown-plus-test)
 ;;; markdown-plus-test.el ends here
