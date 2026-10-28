@@ -743,5 +743,95 @@ outside a block would unfold the buffer."
       (markdown-plus-org--after-change beg end 0)
       (should-not (get-text-property beg 'invisible)))))
 
+;;;; Clipboard paste
+
+(ert-deftest markdown-plus-test-clipboard-file-uris ()
+  "File URI clipboard contents resolve percent-escaped local paths."
+  (let* ((dir (make-temp-file "markdown-plus-test" t))
+         (file (expand-file-name "a b.txt" dir)))
+    (unwind-protect
+        (progn
+          (write-region "" nil file nil 'silent)
+          (with-temp-buffer
+            (cl-letf (((symbol-function 'markdown-plus--clipboard-selection)
+                       (lambda (target)
+                         (and (eq target 'text/uri-list)
+                              (concat "# copied file\n"
+                                      "file://" (replace-regexp-in-string " " "%20" file))))))
+              (should (equal (markdown-plus--clipboard-files) (list file)))))
+      (delete-directory dir t)))))
+
+(ert-deftest markdown-plus-test-insert-clipboard-file-links ()
+  "Pasting clipboard files inserts image or regular Markdown links."
+  (let* ((dir (make-temp-file "markdown-plus-test" t))
+         (image (expand-file-name "pic.png" dir))
+         (doc (expand-file-name "note.md" dir)))
+    (unwind-protect
+        (progn
+          (write-region "" nil image nil 'silent)
+          (with-temp-buffer
+            (setq buffer-file-name doc)
+            (should (markdown-plus--insert-clipboard-files (list image)))
+            (should (equal (buffer-string) "![pic.png](pic.png)\n")))
+          (with-temp-buffer
+            (setq buffer-file-name doc)
+            (should (markdown-plus--insert-clipboard-files (list (expand-file-name "a.txt" dir))))
+            (should (equal (buffer-string) "[a.txt](a.txt)\n"))))
+      (delete-directory dir t))))
+
+(ert-deftest markdown-plus-test-paste-image-saves-width-and-link ()
+  "Clipboard images are saved under an assets directory with an editable width."
+  (let* ((dir (make-temp-file "markdown-plus-test" t))
+         (doc (expand-file-name "note.md" dir))
+         (image-file nil))
+    (unwind-protect
+        (with-temp-buffer
+          (setq buffer-file-name doc)
+          (cl-letf (((symbol-function 'markdown-plus--clipboard-image)
+                     (lambda (file)
+                       (write-region "png" nil file nil 'silent)
+                       t))
+                    ((symbol-function 'read-number) (lambda (&rest _) 640))
+                    ((symbol-function 'markdown-plus--display-images-in-region) (lambda (&rest _))))
+            (should (markdown-plus--paste-clipboard-image)))
+          (should (string-match "<img src=\"note\\.assets/img_[0-9_]+\\.png\" width=\"640\">"
+                                (buffer-string)))
+          (setq image-file (expand-file-name
+                            (markdown-plus--html-attr
+                             (buffer-substring-no-properties
+                              (progn (goto-char (point-min)) (search-forward "<img") (match-beginning 0))
+                              (line-end-position))
+                             "src") dir))
+          (should (file-exists-p image-file)))
+      (delete-directory dir t))))
+
+(ert-deftest markdown-plus-test-resize-image-width ()
+  "C-+ and C-- width helpers update the HTML source value."
+  (with-temp-buffer
+    (insert "<img src=\"pic.png\" width=\"800\">\n")
+    (goto-char (point-min))
+    (search-forward "pic.png")
+    (should (= (markdown-plus--resize-image-at-point 100) 900))
+    (should (string-match-p "width=\"900\"" (buffer-string)))
+    (should (= (markdown-plus--resize-image-at-point -100) 800))
+    (should (string-match-p "width=\"800\"" (buffer-string)))
+    (should (eq (lookup-key markdown-plus-mode-map (kbd "s-v"))
+                'markdown-plus-paste))
+    (should (eq (lookup-key markdown-plus-mode-map (kbd "s-V"))
+                'markdown-plus-paste))
+    (should (eq (lookup-key markdown-plus-mode-map (kbd "C-+"))
+                'markdown-plus-enlarge-image-at-point))
+    (should (eq (lookup-key markdown-plus-mode-map (kbd "C--"))
+                'markdown-plus-shrink-image-at-point))))
+
+(ert-deftest markdown-plus-test-paste-text-falls-back-to-yank ()
+  "Plain text clipboard content falls through to the normal `yank'."
+  (with-temp-buffer
+    (cl-letf (((symbol-function 'markdown-plus--paste-clipboard-image) (lambda () nil))
+              ((symbol-function 'markdown-plus--clipboard-files) (lambda () nil))
+              ((symbol-function 'yank) (lambda () (insert "clipboard text"))))
+      (markdown-plus-paste))
+    (should (equal (buffer-string) "clipboard text"))))
+
 (provide 'markdown-plus-test)
 ;;; markdown-plus-test.el ends here

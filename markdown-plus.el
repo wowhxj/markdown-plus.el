@@ -70,6 +70,7 @@
 
 (require 'cl-lib)
 (require 'browse-url)                   ; `browse-url-file-url'
+(require 'url-util)
 (require 'markdown-mode)
 
 ;;;; Customization ------------------------------------------------------------
@@ -403,8 +404,9 @@ to Org.")
 (defun markdown-plus--local-file (path)
   "Resolve PATH, relative to the buffer's file, to an existing file or nil."
   (let ((f (expand-file-name
-            path (file-name-directory
-                  (or (buffer-file-name) default-directory)))))
+            (replace-regexp-in-string "\\\\ " " " path)
+            (file-name-directory
+             (or (buffer-file-name) default-directory)))))
     (and (file-exists-p f) f)))
 
 (defun markdown-plus--write-downloaded-image (dest-file)
@@ -417,11 +419,11 @@ Return non-nil on success."
     t))
 
 (defun markdown-plus--make-image (file &optional width)
-  "Create an image object for FILE bounded by `markdown-plus-max-image-size'.
-WIDTH, when non-nil, requests that pixel width; the maximum size still
-caps the result, preserving the aspect ratio."
+  "Create an image object for FILE, optionally requesting pixel WIDTH.
+The configured maximum width applies when WIDTH is nil; the configured
+maximum height applies in either case."
   (apply #'create-image file nil nil
-         :max-width (car markdown-plus-max-image-size)
+         :max-width (max (car markdown-plus-max-image-size) (or width 0))
          :max-height (cdr markdown-plus-max-image-size)
          (when width (list :width width))))
 
@@ -1010,6 +1012,154 @@ Mirrors Org's `C-c C-j' (`org-goto').  Requires the `consult' package."
   (let ((markdown-add-footnotes-to-imenu nil))
     (consult-imenu)))
 
+;;;; Clipboard paste ----------------------------------------------------------
+
+(defun markdown-plus--clipboard-selection (target)
+  "Read TARGET from the clipboard, or return nil when unavailable."
+  (when (fboundp 'gui-get-selection)
+    (ignore-errors (gui-get-selection 'CLIPBOARD target))))
+
+(defun markdown-plus--clipboard-files ()
+  "Return local file paths advertised by the clipboard, or nil."
+  (let* ((selection (or (markdown-plus--clipboard-selection 'text/uri-list)
+                        (markdown-plus--clipboard-selection 'public.file-url)
+                        (markdown-plus--clipboard-selection 'NSFilenamesPboardType)))
+         (items (cond ((stringp selection) (split-string selection "[\r\n]+" t))
+                      ((listp selection) selection)))
+         files)
+    (dolist (item items)
+      (when (stringp item)
+        (let ((path (cond
+                     ((string-match "\\`file://\\(?:localhost\\)?\\(/.*\\)\\'" item)
+                      (url-unhex-string (match-string 1 item)))
+                     ((file-name-absolute-p item) item))))
+          (when (and path (file-exists-p path))
+            (push path files)))))
+    (nreverse files)))
+
+(defun markdown-plus--markdown-path (path)
+  "Escape whitespace in PATH for use as a Markdown link destination."
+  (replace-regexp-in-string "[ \t]" (lambda (s) (concat "\\\\" s)) path t t))
+
+(defun markdown-plus--clipboard-image (file)
+  "Save a PNG image from the clipboard to FILE; return non-nil on success."
+  (cond
+   ((eq system-type 'darwin)
+    (and (executable-find "pngpaste")
+         (eq 0 (call-process "pngpaste" nil nil nil file))))
+   ((eq system-type 'gnu/linux)
+    (let ((coding-system-for-read 'binary))
+      (with-temp-buffer
+        (let ((status
+               (cond
+                ((executable-find "wl-paste")
+                 (call-process "wl-paste" nil t nil "--no-newline" "--type" "image/png"))
+                ((executable-find "xclip")
+                 (call-process "xclip" nil t nil "-selection" "clipboard" "-t" "image/png" "-o")))))
+          (when (and (eq status 0) (> (buffer-size) 0))
+            (write-region (point-min) (point-max) file nil 'silent)
+            t)))))))
+
+(defun markdown-plus--paste-clipboard-image ()
+  "Save a clipboard image beside this document and insert its Markdown link."
+  (let ((temporary (make-temp-file "markdown-plus-clipboard-" nil ".png")))
+    (unwind-protect
+        (when (markdown-plus--clipboard-image temporary)
+          (let* ((base (file-name-base (or (buffer-file-name) (buffer-name))))
+                 (directory (expand-file-name
+                             (concat base ".assets")
+                             (file-name-directory (or (buffer-file-name) default-directory))))
+                 (name (concat "img_" (format-time-string "%Y%m%d_%H%M%S") ".png"))
+                 (destination (expand-file-name name directory))
+                 (n 1))
+            (make-directory directory t)
+            (while (file-exists-p destination)
+              (setq destination
+                    (expand-file-name
+                     (format "img_%s_%d.png" (format-time-string "%Y%m%d_%H%M%S") n)
+                     directory)
+                    n (1+ n)))
+            (let ((width (max 50 (truncate (read-number "Image width in pixels: " 800))))
+                  (relative (file-relative-name
+                             destination
+                             (file-name-directory (or (buffer-file-name) default-directory)))))
+              (rename-file temporary destination)
+              (insert (format "\n<img src=\"%s\" width=\"%d\">\n" relative width))
+              (save-excursion
+                (forward-line -1)
+                (goto-char (1+ (line-end-position)))
+                (markdown-plus--display-images-in-region
+                 (line-beginning-position) (line-end-position)))
+              t)))
+      (when (file-exists-p temporary)
+        (delete-file temporary)))))
+
+(defun markdown-plus--insert-clipboard-files (files)
+  "Insert Markdown links to clipboard FILES and return non-nil."
+  (when files
+    (dolist (file files)
+      (let* ((relative (markdown-plus--markdown-path
+                        (file-relative-name
+                         file (file-name-directory (or (buffer-file-name) default-directory)))))
+             (name (file-name-nondirectory file)))
+        (insert (if (image-type-from-file-name file)
+                    (format "![%s](%s)" name relative)
+                  (format "[%s](%s)" name relative)))
+        (insert "\n")))
+    (save-excursion
+      (goto-char (min (1+ (point)) (point-max)))
+      (markdown-plus--display-images-in-region (point-min) (point-max)))
+    t))
+
+(defun markdown-plus--resize-image-at-point (delta)
+  "Change the HTML image width at point by DELTA pixels."
+  (let ((bounds (markdown-plus--bounds-at (point) markdown-plus--html-image-re)))
+    (unless bounds
+      (user-error "Point is not on an HTML image"))
+    (let* ((beg (car bounds))
+           (end (cdr bounds))
+           (tag (buffer-substring-no-properties beg end))
+           (old-width (markdown-plus--html-attr tag "width"))
+           (width (if (and old-width (string-match-p "\\`[0-9]+\\'" old-width))
+                      (string-to-number old-width)
+                    (car markdown-plus-max-image-size)))
+           (new-width (max 50 (+ width delta)))
+           (new-tag (if (string-match "[ \t]+width=\"[0-9]+\"" tag)
+                        (replace-match (format " width=\"%d\"" new-width) t t tag)
+                      (replace-regexp-in-string ">$" (format " width=\"%d\">" new-width)
+                                               tag t t))))
+      (delete-region beg end)
+      (goto-char beg)
+      (insert new-tag)
+      (let ((new-end (point)))
+        (markdown-plus--remove-image-overlays beg new-end)
+        (save-excursion
+          (goto-char (min (1+ new-end) (point-max)))
+          (markdown-plus--display-images-in-region beg new-end)))
+      new-width)))
+
+;;;###autoload
+(defun markdown-plus-enlarge-image-at-point ()
+  "Increase the width of the HTML image at point by 100 pixels."
+  (interactive)
+  (markdown-plus--resize-image-at-point 100))
+
+;;;###autoload
+(defun markdown-plus-shrink-image-at-point ()
+  "Decrease the width of the HTML image at point by 100 pixels."
+  (interactive)
+  (markdown-plus--resize-image-at-point -100))
+
+;;;###autoload
+(defun markdown-plus-paste ()
+  "Paste clipboard content into Markdown, handling images and files specially.
+Plain text uses the normal Emacs `yank' command."
+  (interactive)
+  (unless (or (markdown-plus--paste-clipboard-image)
+              (markdown-plus--insert-clipboard-files
+               (markdown-plus--clipboard-files)))
+    (yank)))
+
 ;;;; Minor mode ---------------------------------------------------------------
 
 (defvar markdown-plus-mode-map
@@ -1022,6 +1172,12 @@ Mirrors Org's `C-c C-j' (`org-goto').  Requires the `consult' package."
     (define-key map (kbd "s-i") #'markdown-insert-italic)
     (define-key map (kbd "s-`") #'markdown-insert-code)
     (define-key map (kbd "s-_") #'markdown-plus-insert-underline)
+    ;; Match the local Org clipboard-paste shortcut; both cases accommodate
+    ;; Emacs configs that distinguish Command-V from Command-Shift-V.
+    (define-key map (kbd "s-v") #'markdown-plus-paste)
+    (define-key map (kbd "s-V") #'markdown-plus-paste)
+    (define-key map (kbd "C-+") #'markdown-plus-enlarge-image-at-point)
+    (define-key map (kbd "C--") #'markdown-plus-shrink-image-at-point)
     ;; Org-style heading commands.  These shadow markdown-mode's own
     ;; `M-RET'/`C-c C-j' (both bound to `markdown-insert-list-item' there);
     ;; `markdown-plus-insert-heading' still reaches that command on a list

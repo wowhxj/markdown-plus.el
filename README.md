@@ -21,9 +21,11 @@ Org-mode-like WYSIWYG editing for Markdown, layered on top of
   text like everything else, on point.
 - **Inline image preview** — local and remote images, in both the
   Markdown form `![alt](path)` and the HTML form
-  `<img src="path" width="400">`; the tag's `width` is honoured, capped
-  by `markdown-plus-max-image-size`. Remote images are downloaded
-  asynchronously and shown when ready.
+  `<img src="path" width="400">`; the tag's `width` controls its
+  rendered width. Remote images are downloaded
+  asynchronously and shown when ready. `s-v` pastes clipboard text,
+  links copied files, or saves clipboard images beside the document and
+  inserts a rendered `<img>` tag with a prompted width.
 - **GitHub alerts** — `> [!NOTE]`, `> [!TIP]`, `> [!IMPORTANT]`,
   `> [!WARNING]` and `> [!CAUTION]` render as a coloured label with a
   Nerd Font icon, which degrades to the bare word without such a font.
@@ -109,6 +111,8 @@ Or enable it on demand with `M-x markdown-plus-mode` in a Markdown buffer.
 | `s-i`         | `markdown-insert-italic`         |
 | `s-\``        | `markdown-insert-code`           |
 | `s-_`         | `markdown-plus-insert-underline` |
+| `s-v`         | paste clipboard text, files, or images |
+| `C-+` / `C--` | enlarge / shrink the HTML image at point by 100 px |
 | `C-c C-o`     | follow the thing at point — anchor links and video links included |
 
 On macOS `s-` is the Command key. All four emphasis commands toggle:
