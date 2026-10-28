@@ -42,10 +42,11 @@ Org-mode-like WYSIWYG editing for Markdown, layered on top of
 - **Pandoc export** — `C-c C-e` opens an Org-style dispatcher buffer for
   Org, standalone HTML, PDF, and DOCX. `C-s` toggles Buffer/Subtree scope;
   subtree export includes the heading at point and its descendants. Choose
-  `h h` for an HTML file or `h o` to open it in a browser; `o o`, `p p`, and
-  `d d` write Org, PDF, and DOCX files. Outputs use the Markdown file's
-  directory and basename; existing outputs require confirmation. PDF export
-  uses XeLaTeX by default.
+  `h h` for an HTML file or `h o` to open it in a browser; `o o` / `o e`
+  export Org / open it in Emacs, while `p p` / `p o` and `d d` / `d o`
+  export PDF/DOCX or open them with the system app. Outputs use the Markdown
+  file's directory and basename; existing outputs require confirmation. PDF
+  export uses XeLaTeX by default.
 - **Table auto-alignment** — GFM tables are aligned when you leave them.
 - **Org `#+begin_src markdown` blocks** — `markdown-plus-org-mode` extends
   the reveal into Org buffers. See [Org src blocks](#org-src-blocks).

@@ -1030,7 +1030,7 @@ Mirrors Org's `C-c C-j' (`org-goto').  Requires the `consult' package."
 
 (defun markdown-plus--export-to (format &optional open)
   "Export the current buffer to Pandoc FORMAT and return the output path.
-When OPEN is non-nil, open the resulting HTML file in a browser."
+When OPEN is non-nil, open the resulting file in its appropriate application."
   (unless buffer-file-name
     (user-error "Visit a Markdown file before exporting"))
   (let* ((entry (cl-find-if (lambda (item) (equal format (cadr item)))
@@ -1061,7 +1061,12 @@ When OPEN is non-nil, open the resulting HTML file in a browser."
           (user-error "Pandoc export failed (%s); see %s" status (buffer-name errors))))
       (message "Exported to %s" output)
       (when open
-        (browse-url-of-file output))
+        (pcase format
+          ("html" (browse-url-of-file output))
+          ("org" (find-file output))
+          ((or "pdf" "docx")
+           (require 'org)
+           (org-open-file output 'system))))
       output)))
 
 (defconst markdown-plus--export-dispatch-buffer "*Markdown Export Dispatcher*"
@@ -1072,11 +1077,11 @@ When OPEN is non-nil, open the resulting HTML file in a browser."
    "[h] Export to HTML\n"
    "    [h] As HTML file                 [o] As HTML file and open\n\n"
    "[o] Export to Org\n"
-   "    [o] As Org file\n\n"
+   "    [o] As Org file                 [e] Open in Emacs\n\n"
    "[p] Export to PDF\n"
-   "    [p] As PDF file\n\n"
+   "    [p] As PDF file                 [o] Open in system app\n\n"
    "[d] Export to DOCX\n"
-   "    [d] As DOCX file\n\n"
+   "    [d] As DOCX file                [o] Open in system app\n\n"
    "[q] Exit / Main menu\n")
   "Help text displayed by `markdown-plus-export-dispatch'.")
 
@@ -1141,7 +1146,10 @@ Use `C-s' to toggle buffer/subtree scope, `h h' for HTML, or `h o' to open it."
                  (t
                   (let* ((entry (assq first-key markdown-plus--export-formats))
                          (format (cadr entry))
-                         (open (and (equal format "html") (eq key ?o)))
+                         (open (or (and (equal format "html") (eq key ?o))
+                                   (and (equal format "org") (eq key ?e))
+                                   (and (member format '("pdf" "docx"))
+                                        (eq key ?o))))
                          (valid (or open (eq key first-key))))
                     (if valid
                         (progn
